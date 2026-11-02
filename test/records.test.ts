@@ -830,10 +830,12 @@ test("af0e4a2f security review: a flood of junk names never crowds a plant out o
   const before = over();
   assert.equal(before.length, 1);
   b.add("records/v1/000000000001.~junk999", "{}", at(600));
-  await runRecords(e, wire().fetch, new Date("2026-11-03T04:30:00Z"), pin);
+  const w2 = wire();
+  await runRecords(e, w2.fetch, new Date("2026-11-03T04:30:00Z"), pin);
   const after = over();
-  assert.deepEqual([after.length, after[0].told], [1, false]); // a new id, not yet told: it alerts as new
-  assert.notEqual(after[0].id, before[0].id);
+  assert.equal(after.length, 1);
+  assert.notEqual(after[0].id, before[0].id); // a new id: it alerts as new, ahead of the junk lines
+  assert.match(msg(w2).get("message")!, /^\d+ more findings from the daily count could not be kept/);
 });
 
 test("af0e4a2f security review: the daily count reads a different window of crowded numbers each day, so every plant is read", async () => {
@@ -846,7 +848,7 @@ test("af0e4a2f security review: the daily count reads a different window of crow
   assert.equal(plants.size, MAX_SWEEP_READS + 5);
 });
 
-test("af0e4a2f security review: a full list keeps untold incidents ahead of told ones, so a new problem is never dropped before Ben hears", async () => {
+test("af0e4a2f security review: a full list keeps serious incidents, told or not; a new junk entry it cannot hold is told through the counted overflow line", async () => {
   const b = bucket(), e = env(b);
   await viaRecorder(b);
   const full = Array.from({ length: MAX_INCIDENTS }, (_, i) => ({ id: `unrecorded:old${i}`, text: `old ${i}`, since: "2026-10-31", told: true }));
@@ -856,7 +858,29 @@ test("af0e4a2f security review: a full list keeps untold incidents ahead of told
   await runRecords(e, w.fetch, NOW, null);
   const list = listOf(e);
   assert.equal(list.length, MAX_INCIDENTS);
-  assert.ok(list.some((i) => i.id.startsWith("stray:") && i.told));
-  assert.ok(list.some((i) => i.id === "incidents:more:2"));
+  assert.ok(!list.some((i) => i.id.startsWith("stray:")));
+  assert.equal(list.filter((i) => i.id.startsWith("unrecorded:")).length, MAX_INCIDENTS - 1);
+  assert.ok(list.some((i) => i.id === "incidents:more:2" && i.told));
+  assert.match(msg(w).get("message")!, /2 more incidents could not be kept/);
+});
+
+test("af0e4a2f security review: a flood of junk names never pushes a told serious incident off the list", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 4, incidents: [{ id: "forged:3", text: "2 objects at record number 3 carry the recorder's signature", since: "2026-10-31", told: true }] }), uploaded: NOW });
+  for (let i = 0; i < MAX_INCIDENTS + 50; i++) b.add(`loose${String(i).padStart(4, "0")}`, "{}", at(-1));
+  for (let i = 0; i < 4; i++) await runRecords(e, wire().fetch, at(60 * i), null);
+  assert.ok(listOf(e).some((i) => i.id === "forged:3"));
+});
+
+test("af0e4a2f security review: among junk and strays, a new untold entry pushes out an old told one, never the other way", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  const old = Array.from({ length: MAX_INCIDENTS }, (_, i) => ({ id: `junk:old${String(i).padStart(4, "0")}`, text: `old ${i}`, since: "2026-10-31", told: true }));
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 4, incidents: old }), uploaded: NOW });
+  b.add("loose", "{}", at(-1));
+  const w = wire();
+  await runRecords(e, w.fetch, NOW, null);
+  assert.ok(listOf(e).some((i) => i.id.startsWith("stray:") && i.told));
   assert.match(msg(w).get("message")!, /something outside the record format/);
 });

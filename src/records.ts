@@ -66,7 +66,8 @@ const pad = (n: number) => String(n).padStart(12, "0");
  */
 export const fp = async (grant: string) => `#${(await sha256(grant)).slice(0, 16)}`;
 // Worst first: what ran unrecorded or unchecked before what is merely malformed.
-const RANK = ["forged", "missing", "unsigned", "unrecorded", "unapproved", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "cap", "backlog", "verdict-first", "bad", "junk", "stray", "sweep"];
+const RANK = ["forged", "missing", "unsigned", "unrecorded", "unapproved", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "cap", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
+const LOW = RANK.indexOf("junk"); // junk and stray: cheap for a writer to make by the thousand
 const kind = (id: string) => id.split(":")[0];
 const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 ? RANK.length : i; };
 // Kinds a full run computes afresh (`sweep`: carried hourly from the last daily count): they leave
@@ -184,7 +185,10 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   const close = () => { if (here.length > 1) shared.push({ n: last, cands: here }); };
   const lost = (to: number) => { for (let n = last + 1; n < to; n++) if (out.length < MAX_SWEPT) add({ id: `missing:${n}`, text: `record ${n} is gone from the bucket: something deleted or renamed it` }); else over++; };
   for (let pages = 0; ; pages++) {
-    if (pages === SWEEP_PAGES) return [...out, { id: "sweep:incomplete", text: `over ${SWEEP_PAGES * 1000} records: the daily count could not finish` }];
+    if (pages === SWEEP_PAGES) {
+      add({ id: "sweep:incomplete", text: `over ${SWEEP_PAGES * 1000} records: the daily count could not finish` });
+      break;
+    }
     const page = await bucket.list({ prefix: ROOT, cursor, limit: 1000 });
     for (const o of page.objects) {
       const m = KEY.exec(o.key);
@@ -198,7 +202,7 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
     if (!cursor) break;
   }
   close();
-  lost(seq + 1);
+  if (!cursor) lost(seq + 1); // an unfinished count cannot tell missing from not yet listed
   // A different window of crowded numbers each day, so a plant past the first few is still read.
   const start = shared.length > MAX_SWEEP_READS ? (Math.floor(now.getTime() / 86_400_000) * MAX_SWEEP_READS) % shared.length : 0;
   for (const { n, cands } of [...shared, ...shared].slice(start, start + Math.min(MAX_SWEEP_READS, shared.length))) {
@@ -403,13 +407,13 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   if (full) for (const id of list.keys()) if (RECHECKED.has(kind(id)) && !found.has(id)) list.delete(id);
   // Found again: same entry (same since, same told), latest wording.
   for (const f of findings) list.set(f.id, list.has(f.id) ? { ...list.get(f.id)!, text: f.text } : { ...f, since: today, told: legacy.has(f.id) });
-  // Over the bound: untold incidents are kept ahead of told ones (each worst first), so a problem
-  // is never dropped before Ben hears of it; the overflow line's id carries its count, so it
-  // alerts again whenever more are dropped.
+  // Over the bound: serious kinds first, told or not; among junk and stray, untold before told, so
+  // a flood of junk can push out only older junk and never a problem Ben has not heard of. The
+  // overflow line's id carries its count, so it alerts again whenever more are dropped.
   const more = [...list.keys()].filter((id) => kind(id) === "incidents");
   const toldMore = new Set(more.filter((id) => list.get(id)!.told));
   for (const id of more) list.delete(id);
-  let listed = [...list.values()].sort((x, y) => Number(x.told) - Number(y.told) || rank(x) - rank(y));
+  let listed = [...list.values()].sort((x, y) => Number(rank(x) >= LOW) - Number(rank(y) >= LOW) || (rank(x) >= LOW ? Number(x.told) - Number(y.told) : 0) || rank(x) - rank(y));
   if (listed.length > MAX_INCIDENTS) {
     const id = `incidents:more:${listed.length - MAX_INCIDENTS + 1}`;
     listed = [...listed.slice(0, MAX_INCIDENTS - 1), { id, text: `${listed.length - MAX_INCIDENTS + 1} more incidents could not be kept: read the records`, since: today, told: toldMore.has(id) }];
