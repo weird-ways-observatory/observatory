@@ -20,7 +20,8 @@ export interface RecordsEnv extends AlertEnv, LockEnv {
 /** The recorder's public key (base64, as GET /v1/status shows it) and the first record number it must have signed. */
 export interface Pin { key: string; from: number }
 // Set only by a Ben-merged PR, from the recorder's status. Undefined: nothing is expected signed yet.
-export const PIN: Pin | undefined = undefined;
+// Pinned 2026-11-02 from GET /v1/status after PR #16 deployed (seq 0, so every record is signed).
+export const PIN: Pin | undefined = { key: "AeN3/Dl3QicxXBObHVyLdhMmWGoDpjVO44LoB0sRV+s=", from: 1 };
 
 export const RECORDS_BUCKET = "observatory-records"; // the RECORDS binding's bucket (wrangler.jsonc)
 export const LOCKED = "records/";
@@ -167,8 +168,8 @@ async function sweep(bucket: Pick<R2Bucket, "list">, seq: number): Promise<Findi
 
 export type RecordsVerdict = "healthy" | "findings" | "unverified";
 
-/** One hour's run: read what is new, judge, alert once per new finding that is delivered, keep state, ping. */
-export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, pin: Pin | undefined = PIN) {
+/** One hour's run: read what is new, judge, alert once per new finding that is delivered, keep state, ping. `pin` null: no pin. */
+export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, pin: Pin | null = PIN ?? null) {
   let prev: State = {};
   try {
     const saved = await env.COPY.get(STATE_KEY);
