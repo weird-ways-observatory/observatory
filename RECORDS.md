@@ -110,12 +110,17 @@ higher one present is a standing gap finding. For each record: the name, the siz
 10 minutes), the hash, the record against this contract, and the order of each grant's stages
 (no duplicates, request first, approval before result, same request and job). Also: any gap in
 the numbers, anything outside `records/v1/`, a UTC day over 400 records, and the lock on
-`records/` (once `LOCK_READ_TOKEN` exists). Once a day (04:30 UTC) it counts every record against
-the recorder's last number, which catches an object slipped in under an older name. Findings
+`records/` (once `LOCK_READ_TOKEN` exists). Once a day (04:30 UTC) it lists every name up to
+the bookmark and reads each number holding more than one object, which catches an object slipped in
+under an older number and names it as the hourly read would (a record number gone is `missing`). Findings
 never repeat writer-chosen text: grant ids and unexpected names are shown as fingerprints (the first 16 hex of their SHA-256), and grant findings name the record number.
-A lock it cannot read, including before `LOCK_READ_TOKEN` exists, is a finding, never healthy. Each finding
-alerts once, worst first; it counts as told only once a channel took the alert, and the rest are
-carried to the next hour. Until Ben sets `PING_URL_RECORDS`, it only logs.
+A lock it cannot read, including before `LOCK_READ_TOKEN` exists, is a finding. Each finding is an
+incident on a standing list (card af0e4a2f), its id tied to the exact object (for a foreign object:
+number, name fingerprint and content fingerprint). It alerts once, worst first, and counts as told
+only once a channel took the alert; the rest are tried the next hour. A locked record's incident
+stays listed; the lock, gap, unreadable-number, stray-outside-v1, day-cap and backlog incidents
+leave when a run that read everything no longer finds them. Nothing marks an incident seen. The light (`PING_URL_RECORDS`)
+says only that the run read what it should. Until Ben sets `PING_URL_RECORDS`, it only logs.
 
 ## Choices for Ben to keep or change
 
