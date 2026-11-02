@@ -8,7 +8,7 @@
 // private half lives only in this Durable Object's storage and is never returned or logged.
 // An `approval` is stored only if Ben's pinned passkey signed it for that grant (passkey.ts, card 7190ab0a).
 import { b64, DAY_CAP, GRANT_TTL_MS, keyFor, MAX_STORED_BYTES, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt, type Stage } from "../contract.ts";
-import { approvalCheck, PASSKEY_PIN, type ApprovalCheck } from "./passkey.ts";
+import { approvalCheck, grantHashOf, PASSKEY_PIN, type ApprovalCheck } from "./passkey.ts";
 
 /** The slice of Durable Object storage used here; each put of several keys is one atomic write. */
 export interface Storage {
@@ -23,7 +23,8 @@ interface Open { grant: string; opened: number; left: number }
 // `used`: today's slots (records written plus reserved, including reservations carried over from
 // grants opened yesterday). `bytes`: every stored envelope's size, for the lifetime budget.
 interface Meta { seq: number; day: string; used: number; bytes: number; open: Open[] }
-// `grant_hash`: the front desk's hash of the grant, from its request record; Ben's passkey answer must carry it.
+// `grant_hash`: the front desk's hash of the grant, kept only if it matches the hash worked out here from
+// the request's own fields (passkey.ts grantHashOf); Ben's passkey answer must carry it.
 interface Grant { job: string; request: string; opened: number; grant_hash?: string; stages: Partial<Record<Stage, Receipt>> }
 interface Pending { key: string; stored: string; storedSha: string; receipt: Receipt; day: string } // `day`: the UTC day its slot was charged to
 interface Keys { priv: string; pub: string } // base64 PKCS#8 and raw Ed25519 public key
@@ -128,7 +129,7 @@ export class Ledger {
       if (meta.used + STAGE_SLOTS > DAY_CAP) return { status: 429, why: `today's ${DAY_CAP} record slots are taken` };
       if (meta.bytes + reservedBytes(meta) + STAGE_SLOTS * MAX_STORED_BYTES > this.budget) return { status: 429, why: "the recorder's storage budget is full: Ben must decide" };
       meta = { ...meta, used: meta.used + STAGE_SLOTS, open: [...meta.open, { grant: r.grant, opened: t, left: STAGE_SLOTS - 1 }] };
-      next = { job: r.job, request: sha, opened: t, ...(typeof r.grant_hash === "string" ? { grant_hash: r.grant_hash } : {}), stages: {} };
+      next = { job: r.job, request: sha, opened: t, ...(r.grant_hash === (await grantHashOf(r)) ? { grant_hash: r.grant_hash } : {}), stages: {} };
     } else {
       if (!grant) return { status: 409, why: "no request is recorded for this grant" };
       if (t - grant.opened > GRANT_TTL_MS) return { status: 410, why: "this grant's request is over 24 hours old" };

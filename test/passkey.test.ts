@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sha256 } from "../src/contract.ts";
 import { Ledger, type Storage } from "../src/recorder/ledger.ts";
-import { approvalCheck, coseToJwk, derToRaw, PASSKEY_PIN, type PasskeyPin } from "../src/recorder/passkey.ts";
+import { approvalCheck, coseToJwk, derToRaw, grantHashOf, PASSKEY_PIN, type PasskeyPin } from "../src/recorder/passkey.ts";
 
 // Card 7190ab0a: the recorder stores an approval only if Ben's pinned passkey signed it for that grant.
 const NOW = () => new Date("2026-11-02T12:00:00Z");
@@ -57,10 +57,11 @@ async function pinFor(k: { id: string; cose: Uint8Array }): Promise<PasskeyPin> 
 }
 
 const JOB = "test.echo";
-/** A recorded request for `grant` (with the desk's grant hash unless `noHash`), and its request sha. */
-async function requested(l: Ledger, grant: string, noHash = false) {
-  const grantHash = Buffer.from(await digest(grant)).toString("hex");
-  const body = JSON.stringify({ v: 1, grant, stage: "request", job: JOB, ...(noHash ? {} : { grant_hash: grantHash }) });
+/** A recorded request for `grant` shaped like the desk's, its grant hash (or `claim` instead), and its sha. */
+async function requested(l: Ledger, grant: string, claim?: string | null) {
+  const fields = { v: 1 as const, grant, stage: "request" as const, job: JOB, params: { word: "hi" }, requester: "c-box agent", reason: "test", created_at: 1, expires_at: 1793000000000 };
+  const grantHash = await grantHashOf(fields);
+  const body = JSON.stringify({ ...fields, ...(claim === null ? {} : { grant_hash: claim ?? grantHash }) });
   assert.equal((await l.accept(body, NOW)).status, 201);
   return { grantHash, request: await sha256(body) };
 }
@@ -134,10 +135,19 @@ test("wrong site, no Face ID, not a sign-in, another passkey -> each refused wit
   for (const [o, why] of cases) await refusedWith(s, approval("grant-eeee1", request, await s.key.answer(grantHash, o)), why);
 });
 
-test("a request recorded without the desk's grant hash: its approval is refused (nothing to compare with)", async () => {
+test("a request without the desk's grant hash, or with one that is not its own: its approval is refused", async () => {
   const s = await setup();
-  const { grantHash, request } = await requested(s.l, "grant-ffff1", true);
-  await refusedWith(s, approval("grant-ffff1", request, await s.key.answer(grantHash)), "the request carries no grant hash");
+  const { grantHash, request } = await requested(s.l, "grant-ffff1", null);
+  await refusedWith(s, approval("grant-ffff1", request, await s.key.answer(grantHash)), "the request's grant hash is missing or wrong");
+  // A tampered desk records grant B claiming grant A's hash, then replays Ben's real answer for A.
+  const A = await requested(s.l, "grant-ffff2");
+  const B = await requested(s.l, "grant-ffff3", A.grantHash);
+  await refusedWith(s, approval("grant-ffff3", B.request, await s.key.answer(A.grantHash)), "the request's grant hash is missing or wrong");
+});
+
+test("grant hash: the same bytes as the front desk's grantHash() (vector computed by front-desk src/desk.ts)", async () => {
+  const r = { v: 1 as const, grant: "grant-vec-0001", stage: "request" as const, job: "test.echo", params: { word: "hi", b: "x\ny" }, requester: "c-box agent", expires_at: 1793000000000 };
+  assert.equal(await grantHashOf(r), "905a973764998436ffcc519cf746e1ad383f3fcfb32963a6f0225928013b393e");
 });
 
 test("malformed answers: missing, wrong types, bad base64, bad JSON, junk DER -> fixed reasons, nothing echoed", async () => {

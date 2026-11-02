@@ -16,11 +16,27 @@ const SHA = /^[0-9a-f]{64}$/;
 const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 const unb64url = (s: string) => unb64(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4));
 
+// Sorted keys, as the front desk's canonical() (front-desk src/desk.ts), so both sides hash the same bytes.
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(",")}}`;
+  return JSON.stringify(v);
+}
+
+/**
+ * The grant hash worked out here from the request record's own fields, as the front desk's grantHash()
+ * does. It covers the grant id, so it belongs to one grant only: a request cannot borrow another
+ * grant's hash to reuse Ben's answer for that grant (commit security review, 2026-11-01).
+ */
+export async function grantHashOf(r: WriterRecord): Promise<string> {
+  return sha256(canonical({ id: r.grant, job: r.job, params: r.params, requester: r.requester, expires_at: r.expires_at }));
+}
+
 /** The checker for one pin; the recorder uses PASSKEY_PIN, tests pass their own. */
 export function approvalCheck(pin: PasskeyPin | undefined): ApprovalCheck {
   return async (r, grantHash) => {
     if (!pin) return "no passkey is pinned: Ben must pin one";
-    if (!grantHash || !SHA.test(grantHash)) return "the request carries no grant hash";
+    if (!grantHash || !SHA.test(grantHash)) return "the request's grant hash is missing or wrong";
     const a = r.assertion as Record<string, unknown> | undefined;
     const fields = ["passkey_id", "authenticator_data", "client_data_json", "signature"];
     if (!a || typeof a !== "object" || !fields.every((f) => typeof a[f] === "string")) return "no passkey answer";
