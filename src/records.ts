@@ -176,18 +176,19 @@ async function strays(bucket: Pick<R2Bucket, "list">): Promise<Finding[]> {
  * objects named exactly as the hourly read names them, so a plant keeps one id however many
  * records follow it (the bucket lister supplies every name; the writer supplies nothing compared).
  */
-async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number): Promise<Finding[]> {
-  const out: Finding[] = [], shared: { n: number; cands: R2Object[] }[] = [];
+async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<Finding[]> {
+  const out: Finding[] = [], junked: Finding[] = [], shared: { n: number; cands: R2Object[] }[] = [];
   let cursor: string | undefined, last = 0, here: R2Object[] = [], over = 0;
-  const add = (f: Finding) => (out.length < MAX_SWEPT ? out.push(f) : over++);
+  // Junk is kept apart (bounded) so a flood of junk names can never crowd out a plant or a gap.
+  const add = (f: Finding) => out.push(f);
   const close = () => { if (here.length > 1) shared.push({ n: last, cands: here }); };
-  const lost = (to: number) => { for (let n = last + 1; n < to; n++) add({ id: `missing:${n}`, text: `record ${n} is gone from the bucket: something deleted or renamed it` }); };
+  const lost = (to: number) => { for (let n = last + 1; n < to; n++) if (out.length < MAX_SWEPT) add({ id: `missing:${n}`, text: `record ${n} is gone from the bucket: something deleted or renamed it` }); else over++; };
   for (let pages = 0; ; pages++) {
     if (pages === SWEEP_PAGES) return [...out, { id: "sweep:incomplete", text: `over ${SWEEP_PAGES * 1000} records: the daily count could not finish` }];
     const page = await bucket.list({ prefix: ROOT, cursor, limit: 1000 });
     for (const o of page.objects) {
       const m = KEY.exec(o.key);
-      if (!m) { add(await junk(o.key)); continue; }
+      if (!m) { if (junked.length < MAX_SWEPT) junked.push(await junk(o.key)); else over++; continue; }
       const n = Number(m[1]);
       if (n > seq) continue; // not read yet: the hourly read reaches it
       if (n !== last) { close(); lost(n); last = n; here = []; }
@@ -198,7 +199,9 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   }
   close();
   lost(seq + 1);
-  for (const { n, cands } of shared.slice(0, MAX_SWEEP_READS)) {
+  // A different window of crowded numbers each day, so a plant past the first few is still read.
+  const start = shared.length > MAX_SWEEP_READS ? (Math.floor(now.getTime() / 86_400_000) * MAX_SWEEP_READS) % shared.length : 0;
+  for (const { n, cands } of [...shared, ...shared].slice(start, start + Math.min(MAX_SWEEP_READS, shared.length))) {
     if (cands.length > MAX_COPIES) add({ id: `sweep:crowded:${n}`, text: `${cands.length} objects share record number ${n}: the daily count could not read them` });
     else if (key && n >= from) {
       const s = await sealsAt(bucket, key, n, cands);
@@ -207,9 +210,12 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
       if (s.unreadable) add({ id: `sweep:unreadable:${n}`, text: `record ${n}: an object there could not be read by the daily count` });
     } else add({ id: `duplicate-number:${n}`, text: `${cands.length} objects share record number ${n}, found by the daily count: something wrote around the recorder` });
   }
-  if (shared.length > MAX_SWEEP_READS) add({ id: "sweep:more", text: `${shared.length - MAX_SWEEP_READS} more record numbers hold extra objects: the daily count read only ${MAX_SWEEP_READS}` });
-  if (over) out.push({ id: "sweep:over", text: `${over} more findings from the daily count could not be kept: read the records` });
-  return out;
+  // Counts are part of these ids: when the hidden amount changes, Ben hears again.
+  if (shared.length > MAX_SWEEP_READS) add({ id: `sweep:more:${shared.length}`, text: `${shared.length - MAX_SWEEP_READS} more record numbers hold extra objects: the daily count read only ${MAX_SWEEP_READS}` });
+  const all = [...out, ...junked].sort((x, y) => rank(x) - rank(y)), kept = all.slice(0, MAX_SWEPT);
+  over += all.length - kept.length;
+  if (over) kept.push({ id: `sweep:over:${over}`, text: `${over} more findings from the daily count could not be kept: read the records` });
+  return kept;
 }
 
 export type RecordsVerdict = "ran" | "unverified";
@@ -366,7 +372,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
       }
       if (checked === PAGE && verdict === "ran") findings.push({ id: `backlog:${day(now)}`, text: `${PAGE} new records in an hour, over what the recorder can take: the rest are read next hour` });
       findings.push(...(await strays(env.RECORDS)));
-      if (now.getUTCHours() === SWEEP_HOUR) swept = await sweep(env.RECORDS, key, from, seq);
+      if (now.getUTCHours() === SWEEP_HOUR) swept = await sweep(env.RECORDS, key, from, seq, now);
     } catch {
       verdict = "unverified";
       reason = "the records could not be listed";
@@ -397,8 +403,18 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   if (full) for (const id of list.keys()) if (RECHECKED.has(kind(id)) && !found.has(id)) list.delete(id);
   // Found again: same entry (same since, same told), latest wording.
   for (const f of findings) list.set(f.id, list.has(f.id) ? { ...list.get(f.id)!, text: f.text } : { ...f, since: today, told: legacy.has(f.id) });
-  let listed = [...list.values()].sort((x, y) => rank(x) - rank(y));
-  if (listed.length > MAX_INCIDENTS) listed = [...listed.slice(0, MAX_INCIDENTS - 1), { id: "incidents:more", text: `${listed.length - MAX_INCIDENTS + 1} more incidents could not be kept: read the records`, since: today, told: false }];
+  // Over the bound: untold incidents are kept ahead of told ones (each worst first), so a problem
+  // is never dropped before Ben hears of it; the overflow line's id carries its count, so it
+  // alerts again whenever more are dropped.
+  const more = [...list.keys()].filter((id) => kind(id) === "incidents");
+  const toldMore = new Set(more.filter((id) => list.get(id)!.told));
+  for (const id of more) list.delete(id);
+  let listed = [...list.values()].sort((x, y) => Number(x.told) - Number(y.told) || rank(x) - rank(y));
+  if (listed.length > MAX_INCIDENTS) {
+    const id = `incidents:more:${listed.length - MAX_INCIDENTS + 1}`;
+    listed = [...listed.slice(0, MAX_INCIDENTS - 1), { id, text: `${listed.length - MAX_INCIDENTS + 1} more incidents could not be kept: read the records`, since: today, told: toldMore.has(id) }];
+  }
+  listed.sort((x, y) => rank(x) - rank(y));
   const fresh = listed.filter((i) => !i.told);
   const ping = env.PING_URL_RECORDS;
 

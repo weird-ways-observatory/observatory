@@ -4,7 +4,7 @@ import worker from "../src/index.ts";
 import { FRESH_CRON } from "../src/fresh.ts";
 import { b64, DAY_CAP, keyFor, MAX_STORED_BYTES, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
 import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
-import { fp, MAX_COPIES, MAX_INCIDENTS, MIN_LOCK_SECONDS, PAGE, PIN, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
+import { fp, MAX_COPIES, MAX_INCIDENTS, MAX_SWEEP_READS, MIN_LOCK_SECONDS, PAGE, PIN, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
 import { STORE_BUDGET_BYTES as TEST_BUDGET } from "../src/contract.ts";
 // Ordering, slot and storage tests: approvals are taken without the passkey check, which has its own
 // tests (passkey.test.ts) driving the real Ledger with a test pin.
@@ -621,7 +621,7 @@ test("the incident list is bounded, with a line saying more were dropped", async
   await runRecords(e, wire().fetch, NOW, null);
   const list = listOf(e);
   assert.equal(list.length, MAX_INCIDENTS);
-  assert.equal(list.at(-1)!.id, "incidents:more");
+  assert.ok(list.some((i) => i.id === "incidents:more:21"));
 });
 
 test("without its own check it only logs: no alert, nothing claims healthy", async () => {
@@ -815,4 +815,48 @@ test("af0e4a2f: the report never says the records are healthy or in order", asyn
   const r = await runRecords(env(b), w.fetch, NOW, null);
   assert.deepEqual([r.records, r.open], ["ran", 0]);
   assert.ok(!/healthy|in order/.test(JSON.stringify(r)) && !w.calls.some((c) => /healthy|in order/.test(c.body)), JSON.stringify(r));
+});
+
+test("af0e4a2f security review: a flood of junk names never crowds a plant out of the daily count, and more junk alerts again", async () => {
+  const b = bucket(), e = env(b), l = await viaRecorder(b, [G], -10, ["request", "approval"]), pin = await pinOf(l);
+  await runRecords(e, wire().fetch, NOW, pin);
+  for (let i = 0; i < 60; i++) b.add(`records/v1/000000000001.~junk${String(i).padStart(3, "0")}`, "{}", at(5));
+  await planted(b, 2, "grant-late", "request", at(5));
+  const w1 = wire();
+  await runRecords(e, w1.fetch, new Date("2026-11-02T04:30:00Z"), pin);
+  assert.ok(listOf(e).some((i) => i.id.startsWith("foreign:2:")), JSON.stringify(listOf(e).map((i) => i.id)));
+  assert.match(msg(w1).get("message")!, /^record 2: an object the recorder did not sign/);
+  const over = () => listOf(e).filter((i) => i.id.startsWith("sweep:over:"));
+  const before = over();
+  assert.equal(before.length, 1);
+  b.add("records/v1/000000000001.~junk999", "{}", at(600));
+  await runRecords(e, wire().fetch, new Date("2026-11-03T04:30:00Z"), pin);
+  const after = over();
+  assert.deepEqual([after.length, after[0].told], [1, false]); // a new id, not yet told: it alerts as new
+  assert.notEqual(after[0].id, before[0].id);
+});
+
+test("af0e4a2f security review: the daily count reads a different window of crowded numbers each day, so every plant is read", async () => {
+  const grants = Array.from({ length: 7 }, (_, i) => `grant-r${i}`);
+  const b = bucket(), e = env(b), l = await viaRecorder(b, grants, -40), pin = await pinOf(l);
+  await runRecords(e, wire().fetch, NOW, pin);
+  for (let n = 1; n <= MAX_SWEEP_READS + 5; n++) await planted(b, n, `grant-p${n}`, "request", at(5));
+  for (const d of ["2026-11-02", "2026-11-03"]) await runRecords(e, wire().fetch, new Date(`${d}T04:30:00Z`), pin);
+  const plants = new Set(listOf(e).filter((i) => i.id.startsWith("foreign:")).map((i) => i.id.split(":")[1]));
+  assert.equal(plants.size, MAX_SWEEP_READS + 5);
+});
+
+test("af0e4a2f security review: a full list keeps untold incidents ahead of told ones, so a new problem is never dropped before Ben hears", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  const full = Array.from({ length: MAX_INCIDENTS }, (_, i) => ({ id: `unrecorded:old${i}`, text: `old ${i}`, since: "2026-10-31", told: true }));
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 4, incidents: full }), uploaded: NOW });
+  b.add("loose", "{}", at(-1));
+  const w = wire();
+  await runRecords(e, w.fetch, NOW, null);
+  const list = listOf(e);
+  assert.equal(list.length, MAX_INCIDENTS);
+  assert.ok(list.some((i) => i.id.startsWith("stray:") && i.told));
+  assert.ok(list.some((i) => i.id === "incidents:more:2"));
+  assert.match(msg(w).get("message")!, /something outside the record format/);
 });
