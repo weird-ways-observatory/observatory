@@ -3,8 +3,14 @@ import assert from "node:assert/strict";
 import worker from "../src/index.ts";
 import { FRESH_CRON } from "../src/fresh.ts";
 import { b64, DAY_CAP, keyFor, MAX_STORED_BYTES, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
-import { Ledger, type Storage } from "../src/recorder/ledger.ts";
+import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
 import { fp, MAX_COPIES, MAX_QUEUED, MIN_LOCK_SECONDS, PAGE, PIN, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
+import { STORE_BUDGET_BYTES as TEST_BUDGET } from "../src/contract.ts";
+// Ordering, slot and storage tests: approvals are taken without the passkey check, which has its own
+// tests (passkey.test.ts) driving the real Ledger with a test pin.
+class TestLedger extends Ledger {
+  constructor(s: Storage, b: Bucket, budget = TEST_BUDGET) { super(s, b, budget, async () => undefined); }
+}
 /** A finding line for a grant, as alerts show it: the fingerprint, never the id. */
 const says = async (grant: string, rest: string, n = "\\d+") => new RegExp(`grant ${await fp(grant)} \\(record ${n}\\)${rest}`);
 
@@ -57,7 +63,7 @@ const rec = (stage: string, over: object = {}, grant = G) => JSON.stringify({ v:
 
 /** Records written the real way, through the recorder's ledger, each stored at its own minute. */
 async function viaRecorder(b: B, grants = [G], start = -10, stages: Stage[] = ["request", "verdict", "approval", "result"]) {
-  const l = new Ledger(memory(), b);
+  const l = new TestLedger(memory(), b);
   let m = start;
   for (const g of grants) {
     const req = rec("request", {}, g), h = await sha256(req);
@@ -114,7 +120,7 @@ test("grants recorded through the recorder are healthy, and the run pings its ow
 });
 
 test("the bookmark: each hour reads only what is new, and a grant across midnight stays in order", async () => {
-  const b = bucket(), e = env(b), l = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), l = new TestLedger(memory(), b);
   const req = rec("request"), h = await sha256(req);
   const t1 = new Date("2026-11-01T23:59:00Z");
   b.setClock(t1);
@@ -170,7 +176,7 @@ test("r1 #1 and r1 #8: names out of sequence are gaps; ties are impossible becau
 });
 
 test("security review: a planted name past every record never parks the bookmark; later real records are still read", async () => {
-  const b = bucket(), e = env(b), l = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), l = new TestLedger(memory(), b);
   b.add("records/v1/zzz-planted", "{}", at(-30));
   await planted(b, 999_999_999_999, "grant-planted", "request", at(-30));
   const req = rec("request"), h = await sha256(req);
@@ -188,7 +194,7 @@ test("security review: a planted name past every record never parks the bookmark
 });
 
 test("security review: a stray name that sorts after every record is reported each hour and never hides new records", async () => {
-  const b = bucket(), e = env(b), l = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), l = new TestLedger(memory(), b);
   b.add("records/v1/zzz-planted", "{}", at(-30));
   const req = rec("request"), h = await sha256(req);
   b.setClock(at(-20));
@@ -204,7 +210,7 @@ test("security review: a stray name that sorts after every record is reported ea
 });
 
 test("before a pin: a shared number is a finding, none of its copies counts, and reading goes on with no step for Ben", async () => {
-  const b = bucket(), e = env(b), l = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), l = new TestLedger(memory(), b);
   const req = rec("request"), h = await sha256(req);
   b.setClock(at(-10)); await l.accept(req, () => at(-10));
   b.setClock(at(-9)); await l.accept(rec("approval", { request: h }), () => at(-9)); // the recorder's number 2
@@ -272,7 +278,7 @@ test("T4 and T8: no signed copy at a number keeps the bookmark there; the real r
   const b = bucket(), e = env(b), real = bucket(), l = await viaRecorder(real, [G], -10, ["request"]), pin = await pinOf(l);
   await planted(b, 1, "grant-plant-a", "request", at(-12)); // ahead of the recorder
   // Today the recorder itself stops rather than write beside it (RECORDS.md, 503).
-  assert.equal((await new Ledger(memory(), b).accept(rec("request"), () => at(-11))).status, 503);
+  assert.equal((await new TestLedger(memory(), b).accept(rec("request"), () => at(-11))).status, 503);
   const first = await runRecords(e, wire().fetch, NOW, pin);
   assert.deepEqual([first.records, first.seq, first.checked], ["findings", 0, 0]);
   // The recorder's own record arrives beside it (a different name): read in its place.
@@ -281,7 +287,7 @@ test("T4 and T8: no signed copy at a number keeps the bookmark there; the real r
   const second = await runRecords(e, wire().fetch, at(60), pin);
   assert.deepEqual([second.seq, second.checked], [1, 1]);
   // A replaced key (T8): every record is foreign until Ben pins the new one -- loud, never passed.
-  const other = await pinOf(new Ledger(memory(), bucket()));
+  const other = await pinOf(new TestLedger(memory(), bucket()));
   const r = await runRecords(env(real), wire().fetch, NOW, other);
   assert.deepEqual([r.records, r.seq], ["findings", 0]);
   assert.match(r.reason, /record 1: an object the recorder did not sign/);
@@ -296,7 +302,7 @@ test("T5: more than MAX_COPIES objects at one number is unverified; nothing ther
 });
 
 test("T6: after the cutover an unsigned or stripped envelope is foreign; before it, the old record still reads", async () => {
-  const b = bucket(), e = env(b), l = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), l = new TestLedger(memory(), b);
   await planted(b, 1, G, "request", at(-20)); // stored before signing began
   await planted(b, 2, "grant-v1", "request", at(-10)); // unsigned, after the cutover
   const r = await runRecords(e, wire().fetch, NOW, { ...(await pinOf(l)), from: 2 });
@@ -339,7 +345,7 @@ test("T7: a copy that cannot be read beside a signed record could be a second si
 test("T9: a pin that cannot be read is unverified, never a crash, and reads nothing", async () => {
   const b = bucket();
   await viaRecorder(b, [G], -10, ["request"]);
-  for (const pin of [{ key: "not base64!", from: 1 }, { key: b64(new Uint8Array(5)), from: 1 }, { key: (await pinOf(new Ledger(memory(), bucket()))).key, from: 0 }]) {
+  for (const pin of [{ key: "not base64!", from: 1 }, { key: b64(new Uint8Array(5)), from: 1 }, { key: (await pinOf(new TestLedger(memory(), bucket()))).key, from: 0 }]) {
     const r = await runRecords(env(b), wire().fetch, NOW, pin);
     assert.deepEqual([r.records, r.seq, r.checked], ["unverified", 0, 0]);
     assert.match(r.reason, /the pinned recorder key could not be read/);
@@ -347,7 +353,7 @@ test("T9: a pin that cannot be read is unverified, never a crash, and reads noth
 });
 
 test("security review: a re-check that stops short never marks unchecked numbers as signed, and keeps its findings", async () => {
-  const b = bucket(), e = env(b), real = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), real = new TestLedger(memory(), b);
   for (let n = 1; n <= 3; n++) await planted(b, n, `grant-pre${String(n).padStart(4, "0")}`, "request", at(-9)); // read unsigned
   assert.equal((await runRecords(e, wire().fetch, NOW, null)).seq, 3);
   b.unreadable.add(keyFor(2, "grant-pre0002", "request"));
@@ -415,7 +421,7 @@ test("T13 (Codex r1 #1): a number the old checker held and passed is read again 
 });
 
 test("Codex r1 #2: when the pin arrives after records were read unsigned, each is checked once for a signature and not counted again", async () => {
-  const b = bucket(), e = env(b), real = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), real = new TestLedger(memory(), b);
   b.setClock(at(-10)); await real.accept(rec("request"), () => at(-10)); // number 1, signed
   await planted(b, 2, "grant-plant-u", "request", at(-9)); // number 2, unsigned, read before any pin
   assert.equal((await runRecords(e, wire().fetch, NOW, null)).seq, 2);
@@ -432,7 +438,7 @@ test("Codex r1 #2: when the pin arrives after records were read unsigned, each i
 });
 
 test("security review: junk names under a number cannot hide its real record", async () => {
-  const b = bucket(), l = new Ledger(memory(), b);
+  const b = bucket(), l = new TestLedger(memory(), b);
   b.setClock(at(-10)); await l.accept(rec("request"), () => at(-10));
   for (const j of ["a", "aa", "aaa", "b"]) b.add(`records/v1/000000000001.${j}`, "{}", at(-9)); // junk sorting before it
   for (const pin of [null, await pinOf(l)]) {
@@ -455,7 +461,7 @@ test("Codex r1 B8: grant ids never appear in alert text, only their fingerprints
 
 
 test("security review: a flood of junk names right after the bookmark cannot stall the reading of real records", async () => {
-  const b = bucket(), e = env(b), l = new Ledger(memory(), b);
+  const b = bucket(), e = env(b), l = new TestLedger(memory(), b);
   const req = rec("request"), h = await sha256(req);
   b.setClock(at(-10)); await l.accept(req, () => at(-10));
   for (let i = 0; i < PAGE + 100; i++) b.add(`records/v1/000000000001~junk${String(i).padStart(4, "0")}`, "{}", at(-9));
