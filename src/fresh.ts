@@ -23,7 +23,7 @@ export interface State {
   mismatchSince?: string; // first hour main was seen ahead of DEPLOYED_SHA
   unreadableSince?: string; // first hour GitHub could not be read
   alerted?: Verdict; // the bad verdict Ben has already been told about
-  lightUp?: true; // last hour's up ping was confirmed, so a /fail now is a change that emails (card 4070b32f)
+  upAt?: string; // the run whose up ping healthchecks confirmed (card 4070b32f)
 }
 // waiting = something is off but still inside its grace window.
 export type Verdict = "healthy" | "waiting" | "not-live" | "unverified";
@@ -71,6 +71,11 @@ export function judge(prev: State, deployed: string | undefined, main: Main, now
   return { verdict: over ? "not-live" : "waiting", state, reason: `main is ${main.sha.slice(0, 7)}, live is ${deployed.slice(0, 7)}, for ${since(state.mismatchSince, now)}` };
 }
 
+/** True when the confirmed up ping is the previous hour's: only then is the light surely green, so a
+ * /fail now is a change that emails. An older one may predate a /fail whose state save failed. */
+const greenLastHour = (upAt: string | undefined, now: Date) =>
+  upAt !== undefined && Math.floor(now.getTime() / HOUR) - Math.floor(Date.parse(upAt) / HOUR) === 1;
+
 /** The verdicts that alert and send /fail. */
 const isBad = (v: Verdict): v is "not-live" | "unverified" => v === "not-live" || v === "unverified";
 const TITLES = { "not-live": "Observatory: a merge did not go live", unverified: "Observatory: cannot verify what is live" } as const;
@@ -96,10 +101,10 @@ export async function runFresh(env: FreshEnv, fetchFn: (req: Request) => Promise
     via = await alert({ ...env, PING_URL: ping }, fetchFn, TITLES[verdict], reason);
     // healthchecks emails only on a change: its /fail tells Ben only if the light was confirmed up.
     // Not told, it is tried again next hour.
-    if (via === "pushover" || (via === "healthchecks" && prev.lightUp)) state.alerted = verdict;
+    if (via === "pushover" || (via === "healthchecks" && greenLastHour(prev.upAt, now))) state.alerted = verdict;
   }
   if (!isBad(verdict)) delete state.alerted;
-  delete state.lightUp; // set again below only once this hour's up ping is confirmed
+  delete state.upAt; // set again below only once this hour's up ping is confirmed
   try {
     await env.COPY.put(STATE_KEY, JSON.stringify(state));
   } catch {
@@ -113,8 +118,8 @@ export async function runFresh(env: FreshEnv, fetchFn: (req: Request) => Promise
   // An alert that fell back to healthchecks has already sent /fail.
   if (ping && via !== "healthchecks") {
     const ok = await fetchFn(new Request(isBad(verdict) ? `${ping}/fail` : ping, { method: "POST", body: JSON.stringify(report) })).then((r) => r.ok, () => false);
-    // A failed save here leaves lightUp unset: the next fallback is then retried, never wrongly told.
-    if (ok && !isBad(verdict)) await env.COPY.put(STATE_KEY, JSON.stringify({ ...state, lightUp: true })).catch(() => undefined);
+    // A failed save here leaves upAt unset or stale: the next fallback is then retried, never wrongly told.
+    if (ok && !isBad(verdict)) await env.COPY.put(STATE_KEY, JSON.stringify({ ...state, upAt: now.toISOString() })).catch(() => undefined);
   }
   return report;
 }
