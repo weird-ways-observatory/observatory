@@ -37,7 +37,7 @@ it cannot detect a secret under an innocent name, so the front desk redacts (pha
 | Answer | Why |
 |---|---|
 | 401 / 403 | no valid edge-login token, or not the front desk (Ben may read status, not write) |
-| 503 | its edge-login settings are missing; Access's keys unreadable; a write pending that the bucket has not taken yet (retry); or anything it did not write already sitting under its next record number (stops until Ben looks) |
+| 503 | its edge-login settings are missing; Access's keys unreadable; a write pending that the bucket has not taken yet (retry) |
 | 413 | over 8192 bytes, counted as the body arrives |
 | 400 | outside the record format above (a fixed reason, never the writer's own text) |
 | 409 | approval or verdict with no recorded request; result with no recorded approval; wrong request hash or job; this stage already recorded with other content; an approval whose passkey answer fails the check below |
@@ -68,6 +68,7 @@ recorder. A lock rule on `records/` (at least 400 days) makes it add-only: Cloud
 overwrite or delete of a locked object.
 
     records/v1/<12-digit sequence number>.<grant>.<stage>.json
+    records/v1/<12-digit sequence number>.<grant>.<stage>.<16 random hex>.json   (only when the plain name was taken)
 
 The recorder picks every name: numbers start at 1 with no gaps, so sorting by name is the order
 it accepted them. Each object holds an envelope, with the writer's bytes untouched:
@@ -96,8 +97,10 @@ Every record stored since its last run, asking for the next expected number by n
 so names elsewhere in the bucket cost nothing and cannot hide records still to come (at most 500
 an hour; more is itself a finding). From `PIN.from` on, the record at a number is the one copy whose
 signature the pinned key verifies and whose envelope names that same number, grant and stage; every
-other object there is a foreign finding, and reading goes on with no step for Ben (the recorder
-itself still stops, 503, while something else sits under its next number). With no signed
+other object there is a foreign finding, and reading goes on with no step for Ben. The recorder
+does not stop either: it writes beside anything else under its next number, and if its exact name
+is already taken by other bytes, it stores the record at that same number as
+`<number>.<grant>.<stage>.<16 random hex>.json`, a name no one can plant ahead (card 6f681cc1). With no signed
 copy at a number yet, the bookmark waits there and reads it again next hour. Two signed copies at
 one number mean the key may be stolen: a `forged` finding, ranked first, and the read stops there,
 unverified. More than 20 objects at one number, or one that cannot be read, also leaves the run
