@@ -50,7 +50,7 @@ Limit: it runs inside the thing it checks. That counts only after cutover, when 
 - The copy faithfully copies whatever the source holds. If tonight's source were overwritten with garbage, earlier nights stay locked here for 30 days; spotting the tampering is a later phase.
 - Cloudflare's own GitHub app (Workers and Pages) holds administration write on the repos it is installed on. Cloudflare controls it; no studio agent can drive it.
 
-- The recorder is not live until Ben's end-of-build sitting: Zero Trust on this account, the Access app and service token, the records bucket and its lock, and a Workers Builds connection for `wrangler.recorder.jsonc`. Live refusal proofs follow (anonymous call refused, service token admitted, overwrite refused by the lock).
+- The recorder is live since 2026-11-01 (card feea07eb): Access in front with the front desk's service token, the records bucket under its lock, and its own Workers Builds connection. Refusals were proven live then (a stranger, a forged token and a wrong secret refused); the service token's admission is proven by the front desk's first real record (phase 3, card 97a2e83d).
 - The recorder and the front desk agree on order, not on truth: a tampered front-desk deploy could skip recording. Phase 3 makes the front desk refuse to run without a receipt; Ben's review of `main` remains the control.
 - The service token's identity is read from the token's `common_name` claim (FROM MEMORY of Access's service-token tokens; the sitting's live proof confirms it).
 
