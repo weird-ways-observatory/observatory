@@ -6,8 +6,15 @@ import { sha256, unb64, type WriterRecord } from "../contract.ts";
 
 /** Ben's passkey, pinned by a Ben-merged PR. The site name and origin are SHA-256 hex: no hostname here. */
 export interface PasskeyPin { id: string; key: string; rp_hash: string; origin_hash: string }
-// Undefined refuses every approval (fail closed). Values come from the front desk's /passkeys page.
-export const PASSKEY_PIN: PasskeyPin | undefined = undefined;
+// Undefined refuses every approval (fail closed). Values come from the front desk's /passkeys page:
+// Ben's iPhone passkey enrolled 2026-10 (ES256, P-256), pasted by Ben 2026-11-02. Approvals recorded
+// before this pin's first deploy were not checked.
+export const PASSKEY_PIN: PasskeyPin | undefined = {
+  id: "4qlxkphe8MPpKV905ZNa35RjF6XbxBXW4JngmePL1GcSP6PJZeqh2-ueCuXM4muG4WIkmn4kSe_voXc",
+  key: "pQECAyYgASFYIIng2pWekJnKVyWomfqSzA0186MKDaC8ppzNol4mMBOyIlggWH8ujSJrXYBzIudQjKtwP5ZS2zwHFNHAVS1L5UPgJBo",
+  rp_hash: "a71259082f80285d0924f4052cfcb46056d9ab664fd90d072fdf661e02885772",
+  origin_hash: "d30ff249f92b7153b016603affef8fcc4231469cfd6c65047260e70d47a258df",
+};
 
 /** Why an approval is refused, or undefined when its passkey answer checks out. Reasons are fixed words. */
 export type ApprovalCheck = (r: WriterRecord, grantHash: string | undefined) => Promise<string | undefined>;
