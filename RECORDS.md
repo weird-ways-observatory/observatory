@@ -118,8 +118,8 @@ A lock it cannot read, including before `LOCK_READ_TOKEN` exists, is a finding. 
 incident on a standing list (card af0e4a2f), its id tied to the exact object (for a foreign object:
 number, name fingerprint and content fingerprint). It alerts once, worst first, and counts as told
 only once a channel took the alert; the rest are tried the next hour. A locked record's incident
-stays listed; the lock, gap, stray-outside-v1, day-cap and backlog incidents leave when a run that
-read everything no longer finds them. Nothing marks an incident seen. The light (`PING_URL_RECORDS`)
+stays listed; the lock, gap, unreadable-number, stray-outside-v1, day-cap and backlog incidents
+leave when a run that read everything no longer finds them. Nothing marks an incident seen. The light (`PING_URL_RECORDS`)
 says only that the run read what it should. Until Ben sets `PING_URL_RECORDS`, it only logs.
 
 ## Choices for Ben to keep or change
