@@ -16,7 +16,7 @@ export interface Storage {
   put(entries: Record<string, unknown>): Promise<void>;
   delete(key: string): Promise<boolean>;
 }
-export type Bucket = Pick<R2Bucket, "get" | "put" | "list">;
+export type Bucket = Pick<R2Bucket, "get" | "put">;
 
 // An open grant still holds `left` reserved slots for its later stages, whatever day they land on.
 interface Open { grant: string; opened: number; left: number }
@@ -183,24 +183,35 @@ export class Ledger {
     return true;
   }
 
+  /** The pending record under a new name at the same number, with a random tag; its receipt follows. */
+  async #retag(p: Pending): Promise<Pending> {
+    const tag = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const key = keyFor(p.receipt.seq, p.receipt.grant, p.receipt.stage, tag);
+    const moved: Pending = { ...p, key, receipt: { ...p.receipt, key } };
+    const g = (await this.storage.get<Grant>(`g:${p.receipt.grant}`))!;
+    await this.storage.put({ pending: moved, [`g:${p.receipt.grant}`]: { ...g, stages: { ...g.stages, [p.receipt.stage]: moved.receipt } } });
+    return moved;
+  }
+
   /** Stores the pending record, if any. Returns why it could not, or undefined once it is stored. */
   async #finishPending(now: Date): Promise<string | undefined> {
     let p = await this.storage.get<Pending>("pending");
     if (!p) return undefined;
     try {
-      // Nothing but this record may sit under its number. Something else there (planted ahead of
-      // the recorder) would let a checker read it as this number's record: stop until Ben looks.
-      const prefix = p.key.slice(0, p.key.indexOf(".") + 1);
-      const here = (await this.bucket.list({ prefix, limit: 10 })).objects.map((o) => o.key);
-      if (here.some((k) => k !== p!.key)) return "the next record's number is taken by an object the recorder did not write: Ben must look";
-      const there = here.includes(p.key) ? await this.bucket.get(p.key) : null;
+      // Other names under this number are not looked at: the record is written beside them, and the
+      // checker reports anything the recorder did not sign as foreign (card 6f681cc1). Halting here
+      // instead let any bucket writer stop every record, and locked plants cannot be deleted.
+      let there = await this.bucket.get(p.key);
+      // Its exact name holding other bytes (planted ahead; names are predictable): it moves to a name
+      // at the same number that no one could plant ahead. Ours from before a crash keeps its name.
+      if (there && (await sha256(new Uint8Array(await there.arrayBuffer()))) !== p.storedSha) {
+        p = await this.#retag(p);
+        there = null;
+      }
       // An approval not yet in the bucket is checked again before it is stored: one queued by a
       // recorder from before the passkey check (or before a new pin) must not slip through (Codex r1 #1).
       if (!there && p.receipt.stage === "approval" && (await this.#withdrawUnverified(p))) return undefined;
-      if (there) {
-        // Stored before a crash: fine only if its raw bytes are ours.
-        if ((await sha256(new Uint8Array(await there.arrayBuffer()))) !== p.storedSha) return "the next record's name is taken by an object the recorder did not write: Ben must look";
-      } else {
+      if (!there) {
         if (now.getTime() - Date.parse(p.receipt.recorded_at) > SKEW_MS / 2 || day(now.getTime()) !== p.day) {
           // Stored late (the bucket was down), or on a later UTC day however briefly: no receipt has
           // gone out, so it takes the time it is actually stored, and its receipt says the same.

@@ -47,7 +47,7 @@ function bucket(pageSize = 1000) {
     async get(k: string) {
       const v = store.get(k);
       if (unreadable.has(k)) throw new Error("read failed");
-      return v ? ({ text: async () => v.body } as R2ObjectBody) : null;
+      return v ? ({ text: async () => v.body, arrayBuffer: async () => new TextEncoder().encode(v.body).buffer } as R2ObjectBody) : null;
     },
     async head(k: string) { const v = store.get(k); return v ? ({ key: k, customMetadata: { sha256: v.sha } } as unknown as R2Object) : null; },
     async put(k: string, b: string, o?: R2PutOptions) { store.set(k, { body: b, uploaded: clock, sha: o?.customMetadata?.sha256 }); return {} as R2Object; },
@@ -240,6 +240,21 @@ test("T1: a planted copy beside a signed record is foreign; the signed one count
   assert.ok(!/unapproved|no approval/.test(next.reason), next.reason);
 });
 
+test("6f681cc1: plants at the recorder's next names are foreign; its tagged and side-by-side records count, with no gap", async () => {
+  const b = bucket(), e = env(b);
+  b.add(keyFor(1, G, "request"), "planted", at(-20)); // its exact next name, taken ahead
+  await planted(b, 2, "grant-plant-b", "request", at(-20)); // another name under its next number
+  const l = await viaRecorder(b, [G], -10, ["request", "approval"]);
+  const tagged = [...b.store.keys()].find((k) => k.startsWith(`records/v1/000000000001.${G}.request.`) && k !== keyFor(1, G, "request"))!;
+  assert.match(tagged, /\.[0-9a-f]{16}\.json$/);
+  assert.ok(b.store.has(keyFor(2, G, "approval")));
+  const r = await runRecords(e, wire().fetch, NOW, await pinOf(l));
+  assert.deepEqual([r.records, r.seq, r.checked], ["findings", 2, 2]);
+  assert.match(r.reason, /record 1: an object the recorder did not sign/);
+  assert.match(r.reason, /record 2: an object the recorder did not sign/);
+  assert.ok(!/gap|missing|unapproved|no request/.test(r.reason), r.reason);
+});
+
 test("T2: a signed envelope copied to another number or name is foreign", async () => {
   const b = bucket(), l = await viaRecorder(b, [G], -10, ["request"]);
   const real = b.store.get(keyFor(1, G, "request"))!.body;
@@ -277,8 +292,6 @@ test("T3: editing any signed field breaks the signature", async () => {
 test("T4 and T8: no signed copy at a number keeps the bookmark there; the real record is read when it lands; a wrong key reads nothing", async () => {
   const b = bucket(), e = env(b), real = bucket(), l = await viaRecorder(real, [G], -10, ["request"]), pin = await pinOf(l);
   await planted(b, 1, "grant-plant-a", "request", at(-12)); // ahead of the recorder
-  // Today the recorder itself stops rather than write beside it (RECORDS.md, 503).
-  assert.equal((await new TestLedger(memory(), b).accept(rec("request"), () => at(-11))).status, 503);
   const first = await runRecords(e, wire().fetch, NOW, pin);
   assert.deepEqual([first.records, first.seq, first.checked], ["findings", 0, 0]);
   // The recorder's own record arrives beside it (a different name): read in its place.

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DAY_CAP, keyFor, MAX_RECORD_BYTES, MAX_STORED_BYTES, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt } from "../src/contract.ts";
+import { DAY_CAP, KEY, keyFor, MAX_RECORD_BYTES, MAX_STORED_BYTES, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt } from "../src/contract.ts";
 import { admit, resetCerts, type AccessEnv } from "../src/recorder/access.ts";
 import { handle } from "../src/recorder/http.ts";
 import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
@@ -164,16 +164,36 @@ test("a crash after the bucket write but before clearing pending: finished witho
   assert.equal(st.m.has("pending"), false);
 });
 
-test("an object it did not write under its next name stops all writes until Ben looks", async () => {
+test("6f681cc1: an object at its next exact name moves the record to a tagged name at the same number; writes go on", async () => {
   const st = storage(), b = bucket(), l = new TestLedger(st, b);
   b.store.set(keyFor(1, G, "request"), { body: "planted", sha: "x" });
   const o = await l.accept(rec("request"), at(0));
-  assert.equal(o.status, 503);
+  assert.equal(o.status, 201);
+  const r = (o as { receipt: Receipt }).receipt;
+  const m = KEY.exec(r.key);
+  assert.ok(m && m[4], r.key); // a random tag, never the planted name
+  assert.deepEqual([r.seq, Number(m[1]), m[2], m[3]], [1, 1, G, "request"]);
+  assert.equal(await sealedOk(l, b, r.key), true);
+  assert.equal(b.store.get(keyFor(1, G, "request"))!.body, "planted"); // the plant is left for the checker to report
+  assert.deepEqual((st.m.get(`g:${G}`) as { stages: { request: Receipt } }).stages.request, r); // a retry gets the same receipt
+  assert.deepEqual(await l.accept(rec("request"), at(1)), { status: 200, receipt: r });
   const o2 = await l.accept(rec("request", {}, "grant-0002"), at(1));
-  assert.deepEqual([o2.status, "why" in o2 && o2.why], [503, "the next record's name is taken by an object the recorder did not write: Ben must look"]);
-  assert.equal(b.store.get(keyFor(1, G, "request"))!.body, "planted");
+  assert.ok("receipt" in o2 && o2.status === 201 && o2.receipt.seq === 2 && o2.receipt.key === keyFor(2, "grant-0002", "request"));
 });
 
+test("6f681cc1: each exact-name clash gets a fresh tag, so planting the tagged name ahead is no use", async () => {
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
+  b.store.set(keyFor(1, G, "request"), { body: "planted", sha: "x" });
+  b.failNext(); // queued under its tagged name, not yet stored
+  assert.equal((await l.accept(rec("request"), at(0))).status, 503);
+  const p = st.m.get("pending") as { key: string };
+  b.store.set(p.key, { body: "planted again", sha: "x" }); // someone saw the tag and planted it too
+  const o = await l.accept(rec("request", {}, "grant-0002"), at(1));
+  assert.equal(o.status, 201);
+  const g = (st.m.get(`g:${G}`) as { stages: { request: Receipt } }).stages.request;
+  assert.ok(g.key !== p.key && g.key !== keyFor(1, G, "request") && KEY.test(g.key), g.key);
+  assert.equal(await sealedOk(l, b, g.key), true);
+});
 test("the day's cap: requests reserve their grant's slots, so admitted grants can always finish", async () => {
   const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const grants = DAY_CAP / STAGE_SLOTS;
@@ -223,16 +243,19 @@ test("Codex r1: a lifetime storage budget; requests reserve room for their stage
   assert.equal((await l.accept(rec("approval", { request: h }, "grant-b001"), at(1))).status, 201); // reserved room still works
 });
 
-test("Codex r1: recovery reads the stored bytes; a foreign object with a matching label is still refused", async () => {
+test("Codex r1: recovery reads the stored bytes; a foreign object with a matching label is never taken as the record", async () => {
   const st = storage(), b = bucket(), l = new TestLedger(st, b);
   b.failNext();
   await l.accept(rec("request"), at(0));
   const p = st.m.get("pending") as { key: string; storedSha: string };
   b.store.set(p.key, { body: "planted garbage", sha: p.storedSha }); // claims the right hash in its metadata
   const o = await l.accept(rec("request", {}, "grant-0002"), at(1));
-  assert.deepEqual([o.status, "why" in o && o.why], [503, "the next record's name is taken by an object the recorder did not write: Ben must look"]);
+  assert.equal(o.status, 201);
+  const g = (st.m.get(`g:${G}`) as { stages: { request: Receipt } }).stages.request;
+  assert.notEqual(g.key, p.key);
+  assert.equal(await sealedOk(l, b, g.key), true);
+  assert.equal(b.store.get(p.key)!.body, "planted garbage");
 });
-
 test("Codex r1: after a long outage the record takes the time it is stored, and its receipt matches", async () => {
   const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const req = rec("request");
@@ -286,17 +309,21 @@ test("Codex r2: recovery compares the stored object's raw bytes, not its decoded
   const forged = new Uint8Array([...raw.slice(0, at3), 0xff, ...raw.slice(at3 + 3)]);
   b.store.set(p.key, { body: p.stored, sha: p.storedSha, raw: forged });
   const o = await l.accept(rec("request", {}, "grant-0002"), at(1));
-  assert.equal(o.status, 503);
+  assert.equal(o.status, 201);
+  const g = (st.m.get(`g:${G}`) as { stages: { request: Receipt } }).stages.request;
+  assert.notEqual(g.key, p.key); // not taken as the record: stored again under a tagged name
+  assert.equal(await sealedOk(l, b, g.key), true);
 });
 
-test("Codex r2: an object planted ahead under the recorder's next number stops the recorder until Ben looks", async () => {
+test("6f681cc1 (Codex r2): an object planted ahead under the recorder's next number is written beside, never a halt", async () => {
   const st = storage(), b = bucket(), l = new TestLedger(st, b);
   b.store.set("records/v1/000000000001.grant-planted.request.json", { body: "{}" });
   const o = await l.accept(rec("request"), at(0));
-  assert.deepEqual([o.status, "why" in o && o.why], [503, "the next record's number is taken by an object the recorder did not write: Ben must look"]);
-  assert.equal(b.store.has(keyFor(1, G, "request")), false);
+  assert.ok("receipt" in o && o.status === 201 && o.receipt.key === keyFor(1, G, "request"));
+  assert.equal(await sealedOk(l, b, keyFor(1, G, "request")), true);
+  assert.equal(b.store.get("records/v1/000000000001.grant-planted.request.json")!.body, "{}");
+  assert.equal((await l.accept(rec("request", {}, "grant-0002"), at(1))).status, 201);
 });
-
 test("simultaneous writes are taken one at a time: no shared sequence number, no lost update", async () => {
   const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const outs = await Promise.all(Array.from({ length: 20 }, (_, i) => l.accept(rec("request", {}, `grant-${String(i).padStart(4, "0")}`), at(0))));

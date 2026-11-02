@@ -27,10 +27,11 @@ const SHA = /^[0-9a-f]{64}$/;
 const SECRETISH = /secret|password|token|private|credential/i;
 const MAX_DEPTH = 8;
 // The recorder picks every name: a sequence number with no gaps, then the grant and the stage.
-// Sorting by name is sorting by the order the recorder accepted them.
-export const KEY = /^records\/v1\/(\d{12})\.([A-Za-z0-9][A-Za-z0-9_-]{7,63})\.(request|approval|verdict|result)\.json$/;
+// Sorting by name is sorting by the order the recorder accepted them. A random tag is added only
+// when something else already holds the plain name (card 6f681cc1): no one can plant it ahead.
+export const KEY = /^records\/v1\/(\d{12})\.([A-Za-z0-9][A-Za-z0-9_-]{7,63})\.(request|approval|verdict|result)(?:\.([0-9a-f]{16}))?\.json$/;
 /** The stored name for a record: sequence number first, so names sort in the order the recorder took them. */
-export const keyFor = (seq: number, grant: string, stage: Stage) => `${ROOT}${String(seq).padStart(12, "0")}.${grant}.${stage}.json`;
+export const keyFor = (seq: number, grant: string, stage: Stage, tag?: string) => `${ROOT}${String(seq).padStart(12, "0")}.${grant}.${stage}${tag ? `.${tag}` : ""}.json`;
 
 /** What the writer sends: checked before anything is stored, and again by the hourly checker. */
 export interface WriterRecord { v: 1; grant: string; stage: Stage; job: string; request?: string; [k: string]: unknown }
