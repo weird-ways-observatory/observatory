@@ -51,7 +51,7 @@ interface Open { job: string; req: string; at: number; stages: Stage[] }
 // `sealed`: numbers from the pin's start up to `to` were confirmed signed under the pin with this key.
 // `held`/`snap` come only from the checker before signing; they are read once, never saved again.
 // `alerted`/`queued` come only from the checker before af0e4a2f: read once to carry what was told.
-interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedMore?: number; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[] }
+interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedFull?: boolean; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[] }
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -129,6 +129,8 @@ const stuck = (n: number, text: string): Finding => ({ id: `unreadable:${n}`, te
 // Ids written before af0e4a2f that name no exact object: the old daily count (`foreign:<count>`)
 // and the old foreign id without a content fingerprint. Dropped at load; the daily count re-finds plants.
 const OLD_FOREIGN = /^foreign:\d+(:[0-9a-f]{12})?$/;
+// The record number a daily-count problem is about (`sweep:unreadable:<n>`, `sweep:crowded:<n>`).
+const numberOf = (id: string) => Number(/^sweep:(?:unreadable|crowded):(\d+)$/.exec(id)?.[1] ?? NaN);
 const forged = (n: number, count: number): Finding => ({ id: `forged:${n}`, text: `${count} objects at record number ${n} carry the recorder's signature: its key may be stolen` });
 
 /** The order check for one record, against the grants seen so far. Updates `open`. */
@@ -184,7 +186,7 @@ async function strays(bucket: Pick<R2Bucket, "list">): Promise<Finding[]> {
  * records follow it (the bucket lister supplies every name; the writer supplies nothing compared).
  * `incomplete` says why the count did not read everything it should (the run is then unverified).
  */
-async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<{ found: Finding[]; incomplete?: string }> {
+async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<{ found: Finding[]; incomplete?: string; skipped: Set<number> }> {
   const out: Finding[] = [], junked: Finding[] = [], shared: { n: number; cands: R2Object[] }[] = [];
   let cursor: string | undefined, last = 0, here: R2Object[] = [], over = 0, incomplete: string | undefined;
   // Junk is kept apart (bounded) so a flood of junk names can never crowd out a plant or a gap.
@@ -212,7 +214,8 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   if (!cursor) lost(seq + 1); // an unfinished count cannot tell missing from not yet listed
   // A different window of crowded numbers each day, so a plant past the first few is still read.
   const start = shared.length > MAX_SWEEP_READS ? (Math.floor(now.getTime() / 86_400_000) * MAX_SWEEP_READS) % shared.length : 0;
-  for (const { n, cands } of [...shared, ...shared].slice(start, start + Math.min(MAX_SWEEP_READS, shared.length))) {
+  const window = [...shared, ...shared].slice(start, start + Math.min(MAX_SWEEP_READS, shared.length));
+  for (const { n, cands } of window) {
     if (cands.length > MAX_COPIES) add({ id: `sweep:crowded:${n}`, text: (incomplete = `${cands.length} objects share record number ${n}: the daily count could not read them`) });
     else if (key && n >= from) {
       const s = await sealsAt(bucket, key, n, cands);
@@ -226,7 +229,8 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   const all = [...out, ...junked].sort((x, y) => rank(x) - rank(y)), kept = all.slice(0, MAX_SWEPT);
   over += all.length - kept.length;
   if (over) kept.push({ id: `sweep:over:${over}`, text: `${over} more findings from the daily count could not be kept: read the records` });
-  return { found: kept, incomplete };
+  const read = new Set(window.map((w) => w.n));
+  return { found: kept, incomplete, skipped: new Set(shared.map((w) => w.n).filter((n) => !read.has(n))) };
 }
 
 export type RecordsVerdict = "ran" | "unverified";
@@ -391,7 +395,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
       findings.push(...(await strays(env.RECORDS)));
       if (now.getUTCHours() === SWEEP_HOUR) {
         const s = await sweep(env.RECORDS, key, from, seq, now);
-        swept = s.found;
+        // A crowded number outside today's window was not looked at: its open problem is carried, never cleared (Codex r2 #4).
+        swept = [...s.found, ...swept.filter((f) => s.skipped.has(numberOf(f.id)) && !s.found.some((g) => g.id === f.id))].slice(0, MAX_SWEPT + 1);
         if (s.incomplete) (verdict = "unverified"), (reason = s.incomplete);
       }
     } catch {
@@ -425,8 +430,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   const lastMore = list.get("incidents:more");
   list.delete("incidents:more");
   const before = new Set(Array.isArray(prev.dropped) ? prev.dropped.filter((x): x is string => typeof x === "string") : []);
-  const dropped = new Set(before), moreBefore = Number.isInteger(prev.droppedMore) ? prev.droppedMore! : 0;
-  let droppedMore = moreBefore;
+  const dropped = new Set(before), fullBefore = prev.droppedFull === true;
+  let droppedFull = fullBefore;
   const found = new Set(findings.map((f) => f.id));
   if (full) for (const id of [...list.keys(), ...dropped]) if (RECHECKED.has(kind(id)) && !found.has(id)) list.delete(id), dropped.delete(id);
   // Found again: same entry (same since, same told), latest wording. A dropped id found again was
@@ -435,14 +440,16 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   // Over the bound: serious kinds first, told or not; among junk and stray, untold before told, so
   // a flood of junk can push out only older junk; among serious kinds of one rank, untold first.
   let listed = [...list.values()].sort((x, y) => Number(rank(x) >= LOW) - Number(rank(y) >= LOW) || (rank(x) >= LOW ? Number(x.told) - Number(y.told) : 0) || rank(x) - rank(y) || Number(x.told) - Number(y.told));
-  const room = dropped.size || droppedMore || listed.length > MAX_INCIDENTS ? MAX_INCIDENTS - 1 : MAX_INCIDENTS;
+  const room = dropped.size || listed.length > MAX_INCIDENTS ? MAX_INCIDENTS - 1 : MAX_INCIDENTS;
   for (const i of listed.slice(room)) dropped.add(i.id);
   listed = listed.slice(0, room);
   for (const i of listed) dropped.delete(i.id);
-  for (const id of [...dropped].slice(MAX_DROPPED)) dropped.delete(id), droppedMore++;
-  if (dropped.size || droppedMore) {
-    const grew = droppedMore > moreBefore || [...dropped].some((id) => !before.has(id));
-    listed.push({ id: "incidents:more", text: `${dropped.size + droppedMore} more incidents could not be kept: read the records`, since: lastMore?.since ?? today, told: lastMore?.told === true && !grew });
+  // Past MAX_DROPPED the newest ids are not kept, so the checker can no longer tell a new problem
+  // from an old one there: the line says so, and alerts once when that first happens (Codex r2 new #2).
+  for (const id of [...dropped].slice(MAX_DROPPED)) dropped.delete(id), (droppedFull = true);
+  if (dropped.size) {
+    const grew = droppedFull !== fullBefore || [...dropped].some((id) => !before.has(id));
+    listed.push({ id: "incidents:more", text: droppedFull ? `over ${MAX_DROPPED} more incidents could not be kept, and new ones past that cannot be told apart: read the records` : `${dropped.size} more incidents could not be kept: read the records`, since: lastMore?.since ?? today, told: lastMore?.told === true && !grew });
   }
   listed.sort((x, y) => rank(x) - rank(y));
   const fresh = listed.filter((i) => !i.told);
@@ -469,10 +476,11 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     if (lines.length) {
       const title = verdict === "unverified" && !unverifiedTold ? "Observatory: the records check could not finish" : sent.length ? `Observatory: ${sent.length} new records incident${sent.length === 1 ? "" : "s"}` : "Observatory: open records incidents this week";
       // A run that read everything turns the light green first, so a fallback /fail is a change that emails.
-      if (verdict === "ran") await fetchFn(new Request(ping, { method: "POST", body: "run complete; an alert follows" })).catch(() => undefined);
+      // Only a confirmed green makes the fallback /fail a change (Codex r2 new #1).
+      const green = verdict === "ran" && (await fetchFn(new Request(ping, { method: "POST", body: "run complete; an alert follows" })).then((r) => r.ok, () => false));
       const via = await alert({ ...env, PING_URL: ping }, fetchFn, title, lines.join("\n"));
       // On an unverified run the light may already be red: only Pushover counts as delivered.
-      if (via === "pushover" || (via === "healthchecks" && verdict === "ran")) {
+      if (via === "pushover" || (via === "healthchecks" && green)) {
         for (const i of sent) i.told = true;
         if (remind) reminded = today;
       }
@@ -481,7 +489,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   }
   if (verdict === "ran") reason = `${checked} new records read; ${listed.length} open incident${listed.length === 1 ? "" : "s"}${listed.length ? `: ${listed.map((i) => i.text).join("; ")}` : ""}`;
   try {
-    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedMore, unverifiedTold, reminded } satisfies State));
+    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull: droppedFull && dropped.size > 0, unverifiedTold, reminded } satisfies State));
   } catch {
     reason = `records state could not be saved; ${reason}`;
     verdict = "unverified";

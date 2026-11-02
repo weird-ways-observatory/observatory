@@ -4,7 +4,7 @@ import worker from "../src/index.ts";
 import { FRESH_CRON } from "../src/fresh.ts";
 import { b64, DAY_CAP, keyFor, MAX_STORED_BYTES, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
 import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
-import { fp, MAX_COPIES, MAX_INCIDENTS, MAX_SWEEP_READS, MIN_LOCK_SECONDS, PAGE, PIN, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
+import { fp, MAX_COPIES, MAX_DROPPED, MAX_INCIDENTS, MAX_SWEEP_READS, MIN_LOCK_SECONDS, PAGE, PIN, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
 import { STORE_BUDGET_BYTES as TEST_BUDGET } from "../src/contract.ts";
 // Ordering, slot and storage tests: approvals are taken without the passkey check, which has its own
 // tests (passkey.test.ts) driving the real Ledger with a test pin.
@@ -986,4 +986,59 @@ test("commit security review: a 'could not finish' alert that only reached the f
   const again = wire();
   await runRecords(e, again.fetch, at(120), null);
   assert.equal(again.pushes().length, 0); // told once Pushover took it
+});
+
+// Codex r2 (af0e4a2f) cases.
+test("Codex r2 #4: an unreadable plant at a crowded number the next day's window skips stays listed", async () => {
+  const grants = Array.from({ length: 7 }, (_, i) => `grant-r${i}`);
+  const b = bucket(), e = env(b), l = await viaRecorder(b, grants, -40), pin = await pinOf(l);
+  await runRecords(e, wire().fetch, NOW, pin);
+  const crowded = MAX_SWEEP_READS + 1;
+  for (let n = 1; n <= crowded; n++) await planted(b, n, `grant-p${n}`, "request", at(5));
+  // The number the 11-03 window leaves out (the same formula as sweep's): read on 11-02, skipped on 11-03.
+  const day2 = new Date("2026-11-03T04:30:00Z"), start = (Math.floor(day2.getTime() / 86_400_000) * MAX_SWEEP_READS) % crowded;
+  const n = ((start + MAX_SWEEP_READS) % crowded) + 1;
+  b.unreadable.add(keyFor(n, `grant-p${n}`, "request"));
+  assert.equal((await runRecords(e, wire().fetch, new Date("2026-11-02T04:30:00Z"), pin)).records, "unverified");
+  assert.ok(listOf(e).some((i) => i.id === `sweep:unreadable:${n}`));
+  assert.equal((await runRecords(e, wire().fetch, day2, pin)).records, "ran"); // n not read today
+  await runRecords(e, wire().fetch, new Date("2026-11-03T05:30:00Z"), pin); // a full hourly run
+  assert.ok(listOf(e).some((i) => i.id === `sweep:unreadable:${n}`), "skipped is not cleared");
+});
+
+test("Codex r2 new #1: a fallback counts as delivered only after the green ping is confirmed", async () => {
+  const b = bucket(), e = env(b);
+  await planted(b, 1, G, "result", at(-1));
+  const paths: string[] = [];
+  const fetch = async (req: Request) => {
+    const url = new URL(req.url);
+    if (url.hostname === "api.cloudflare.com") return Response.json({ success: true, result: { rules: GOOD_LOCK } });
+    if (url.hostname === "api.pushover.net") return new Response("{}", { status: 503 });
+    paths.push(url.pathname);
+    return new Response("{}", { status: url.pathname.endsWith("/fail") ? 200 : 503 }); // green refused, /fail taken
+  };
+  await runRecords(e, fetch, NOW, null);
+  assert.deepEqual(paths, ["/rec", "/rec/fail", "/rec"]);
+  assert.ok(listOf(e).every((i) => !i.told));
+});
+
+test("Codex r2 new #2: past the dropped-id limit nothing changing means no new alert and no climbing count", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  const serious = Array.from({ length: MAX_INCIDENTS - 1 }, (_, i) => ({ id: `unrecorded:old${i}`, text: `old ${i}`, since: "2026-10-31", told: true }));
+  const dropped = Array.from({ length: MAX_DROPPED }, (_, i) => `unrecorded:gone${i}`);
+  const more = { id: "incidents:more", text: `${MAX_DROPPED} more incidents could not be kept: read the records`, since: "2026-10-31", told: true };
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 4, incidents: [...serious, more], dropped }), uploaded: NOW });
+  b.add("loose", "{}", at(-1));
+  const texts: string[] = [];
+  let pushes = 0;
+  for (let h = 0; h < 4; h++) {
+    const w = wire();
+    await runRecords(e, w.fetch, at(60 * h), null);
+    pushes += w.pushes().length;
+    texts.push(listOf(e).find((i) => i.id === "incidents:more")!.text);
+  }
+  assert.equal(pushes, 1); // once, when the checker first cannot tell new from old
+  assert.equal(new Set(texts).size, 1);
+  assert.match(texts[0], /cannot be told apart/);
 });
