@@ -7,7 +7,8 @@ import { sha256, unb64, type WriterRecord } from "../contract.ts";
 /** Ben's passkey, pinned by a Ben-merged PR. The site name and origin are SHA-256 hex: no hostname here. */
 export interface PasskeyPin { id: string; key: string; rp_hash: string; origin_hash: string }
 // Undefined refuses every approval (fail closed). Values come from the front desk's /passkeys page:
-// Ben's iPhone passkey enrolled 2026-10 (ES256, P-256), pasted by Ben 2026-11-02. Approvals recorded
+// Ben's iPhone passkey enrolled 2026-10 (ES256, P-256), read by Ben from that page and pasted
+// 2026-11-02 UTC; both hashes were recomputed from the live desk address before pinning. Approvals recorded
 // before this pin's first deploy were not checked.
 export const PASSKEY_PIN: PasskeyPin | undefined = {
   id: "4qlxkphe8MPpKV905ZNa35RjF6XbxBXW4JngmePL1GcSP6PJZeqh2-ueCuXM4muG4WIkmn4kSe_voXc",
