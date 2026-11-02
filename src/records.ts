@@ -396,7 +396,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
       if (now.getUTCHours() === SWEEP_HOUR) {
         const s = await sweep(env.RECORDS, key, from, seq, now);
         // A crowded number outside today's window was not looked at: its open problem is carried, never cleared (Codex r2 #4).
-        swept = [...s.found, ...swept.filter((f) => s.skipped.has(numberOf(f.id)) && !s.found.some((g) => g.id === f.id))].slice(0, MAX_SWEPT + 1);
+        const carried = swept.filter((f) => s.skipped.has(numberOf(f.id)) && !s.found.some((g) => g.id === f.id));
+        swept = [...s.found, ...carried].sort((x, y) => rank(x) - rank(y)).slice(0, MAX_SWEPT + 1);
         if (s.incomplete) (verdict = "unverified"), (reason = s.incomplete);
       }
     } catch {
@@ -440,14 +441,20 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   // Over the bound: serious kinds first, told or not; among junk and stray, untold before told, so
   // a flood of junk can push out only older junk; among serious kinds of one rank, untold first.
   let listed = [...list.values()].sort((x, y) => Number(rank(x) >= LOW) - Number(rank(y) >= LOW) || (rank(x) >= LOW ? Number(x.told) - Number(y.told) : 0) || rank(x) - rank(y) || Number(x.told) - Number(y.told));
-  const room = dropped.size || listed.length > MAX_INCIDENTS ? MAX_INCIDENTS - 1 : MAX_INCIDENTS;
+  const room = dropped.size || droppedFull || listed.length > MAX_INCIDENTS ? MAX_INCIDENTS - 1 : MAX_INCIDENTS;
   for (const i of listed.slice(room)) dropped.add(i.id);
   listed = listed.slice(0, room);
   for (const i of listed) dropped.delete(i.id);
-  // Past MAX_DROPPED the newest ids are not kept, so the checker can no longer tell a new problem
-  // from an old one there: the line says so, and alerts once when that first happens (Codex r2 new #2).
-  for (const id of [...dropped].slice(MAX_DROPPED)) dropped.delete(id), (droppedFull = true);
-  if (dropped.size) {
+  // Past MAX_DROPPED the least serious ids are let go (oldest first among equals), so a new serious
+  // problem still joins and alerts, and a junk name found again cannot churn. Once that happens the
+  // checker can no longer tell every new problem from an old one: the line says so for good.
+  if (dropped.size > MAX_DROPPED) {
+    const keep = [...dropped].sort((x, y) => rank({ id: x, text: "" }) - rank({ id: y, text: "" })).slice(0, MAX_DROPPED);
+    dropped.clear();
+    for (const id of keep) dropped.add(id);
+    droppedFull = true;
+  }
+  if (dropped.size || droppedFull) {
     const grew = droppedFull !== fullBefore || [...dropped].some((id) => !before.has(id));
     listed.push({ id: "incidents:more", text: droppedFull ? `over ${MAX_DROPPED} more incidents could not be kept, and new ones past that cannot be told apart: read the records` : `${dropped.size} more incidents could not be kept: read the records`, since: lastMore?.since ?? today, told: lastMore?.told === true && !grew });
   }
@@ -489,7 +496,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   }
   if (verdict === "ran") reason = `${checked} new records read; ${listed.length} open incident${listed.length === 1 ? "" : "s"}${listed.length ? `: ${listed.map((i) => i.text).join("; ")}` : ""}`;
   try {
-    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull: droppedFull && dropped.size > 0, unverifiedTold, reminded } satisfies State));
+    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull, unverifiedTold, reminded } satisfies State));
   } catch {
     reason = `records state could not be saved; ${reason}`;
     verdict = "unverified";

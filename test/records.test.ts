@@ -1001,6 +1001,7 @@ test("Codex r2 #4: an unreadable plant at a crowded number the next day's window
   b.unreadable.add(keyFor(n, `grant-p${n}`, "request"));
   assert.equal((await runRecords(e, wire().fetch, new Date("2026-11-02T04:30:00Z"), pin)).records, "unverified");
   assert.ok(listOf(e).some((i) => i.id === `sweep:unreadable:${n}`));
+  for (let i = 0; i < 60; i++) b.add(`records/v1/000000000001.~junk${String(i).padStart(3, "0")}`, "{}", at(600)); // junk must not crowd it out
   assert.equal((await runRecords(e, wire().fetch, day2, pin)).records, "ran"); // n not read today
   await runRecords(e, wire().fetch, new Date("2026-11-03T05:30:00Z"), pin); // a full hourly run
   assert.ok(listOf(e).some((i) => i.id === `sweep:unreadable:${n}`), "skipped is not cleared");
@@ -1041,4 +1042,27 @@ test("Codex r2 new #2: past the dropped-id limit nothing changing means no new a
   assert.equal(pushes, 1); // once, when the checker first cannot tell new from old
   assert.equal(new Set(texts).size, 1);
   assert.match(texts[0], /cannot be told apart/);
+});
+
+test("commit security review: past the dropped-id limit a new serious problem still alerts, and the limit line never clears itself", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  const serious = Array.from({ length: MAX_INCIDENTS - 1 }, (_, i) => ({ id: `forged:${1000 + i}`, text: `old ${i}`, since: "2026-10-31", told: true }));
+  const dropped = Array.from({ length: MAX_DROPPED }, (_, i) => `junk:old${i}`);
+  const more = { id: "incidents:more", text: "old line", since: "2026-10-31", told: true };
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 4, incidents: [...serious, more], dropped, droppedFull: true }), uploaded: NOW });
+  await planted(b, 5, "grant-zzzz", "result", at(-1)); // a new serious problem: ran unrecorded
+  const w = wire();
+  await runRecords(e, w.fetch, NOW, null);
+  assert.equal(w.pushes().length, 1);
+  const quiet = wire();
+  await runRecords(e, quiet.fetch, at(60), null);
+  assert.equal(quiet.pushes().length, 0);
+  // Every tracked id gone: the line still says the checker cannot tell every new problem apart.
+  const st = JSON.parse(e.COPY.store.get(STATE_KEY)!.body);
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ ...st, incidents: [], dropped: [] }), uploaded: NOW });
+  for (const m of [120, 180]) {
+    await runRecords(e, wire().fetch, at(m), null);
+    assert.match(listOf(e).find((i) => i.id === "incidents:more")!.text, /cannot be told apart/);
+  }
 });
