@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sha256 } from "../src/contract.ts";
+import { keyFor } from "../src/contract.ts";
 import { Ledger, type Storage } from "../src/recorder/ledger.ts";
 import { approvalCheck, coseToJwk, derToRaw, grantHashOf, PASSKEY_PIN, type PasskeyPin } from "../src/recorder/passkey.ts";
 
@@ -38,9 +39,9 @@ async function softKey(id = "cred-ben-1") {
   const cose = new Uint8Array([0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20, ...x, 0x22, 0x58, 0x20, ...y]);
   return {
     id, cose,
-    async answer(grantHash: string, o: { origin?: string; rp?: string; flags?: number; type?: string; id?: string; challenge?: Uint8Array } = {}) {
+    async answer(grantHash: string, o: { origin?: string; rp?: string; flags?: number; type?: string; id?: string; challenge?: Uint8Array; client?: object } = {}) {
       const challenge = o.challenge ?? new Uint8Array([...crypto.getRandomValues(new Uint8Array(16)), ...Buffer.from(grantHash, "hex")]);
-      const clientData = new TextEncoder().encode(JSON.stringify({ type: o.type ?? "webauthn.get", challenge: b64u(challenge), origin: o.origin ?? ORIGIN, crossOrigin: false }));
+      const clientData = new TextEncoder().encode(JSON.stringify({ type: o.type ?? "webauthn.get", challenge: b64u(challenge), origin: o.origin ?? ORIGIN, crossOrigin: false, ...o.client }));
       const auth = new Uint8Array([...(await digest(o.rp ?? RP)), o.flags ?? 0x1d, 0, 0, 0, 0]);
       const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, new Uint8Array([...auth, ...(await digest(clientData))])));
       return { passkey_id: o.id ?? id, authenticator_data: b64u(auth), client_data_json: b64u(clientData), signature: b64u(rawToDer(raw)) };
@@ -131,6 +132,10 @@ test("wrong site, no Face ID, not a sign-in, another passkey -> each refused wit
     [{ flags: 0x04 }, "Face ID was not used"], // verified, not present
     [{ type: "webauthn.create" }, "not a passkey sign-in"],
     [{ id: "cred-other" }, "not the pinned passkey"],
+    [{ client: { crossOrigin: true } }, "not the front desk's site"], // asked from inside another site's frame
+    [{ client: { topOrigin: "https://evil.example" } }, "not the front desk's site"],
+    [{ flags: 0x15 }, "the passkey answer could not be read"], // backed up but not backup-eligible
+    [{ flags: 0x45 }, "the passkey answer could not be read"], // attested credential data in a sign-in
   ];
   for (const [o, why] of cases) await refusedWith(s, approval("grant-eeee1", request, await s.key.answer(grantHash, o)), why);
 });
@@ -177,6 +182,9 @@ test("a pinned key that is not ES256 P-256 is refused, never trusted", async () 
   assert.throws(() => coseToJwk(badAlg), /not ES256/);
   assert.throws(() => coseToJwk(badKty), /not ES256/);
   assert.throws(() => coseToJwk(k.cose.slice(0, 20)));
+  assert.throws(() => coseToJwk(new Uint8Array([...k.cose, 0x00])), /cbor/); // trailing bytes
+  const dup = Uint8Array.from(k.cose); dup[0] = 0xa6; // six entries: alg 0x26 (-7) given twice
+  assert.throws(() => coseToJwk(new Uint8Array([...dup, 0x03, 0x26])), /cbor/);
   assert.equal(coseToJwk(k.cose).kty, "EC");
 });
 
@@ -189,4 +197,71 @@ test("DER to raw: leading-zero integers are trimmed and short ones padded to 32 
   const good = rawToDer(new Uint8Array([...r, ...sv]));
   const padded = new Uint8Array([0x30, good[1] + 1, ...good.slice(2), 0x00]); // a stray byte inside the sequence
   assert.throws(() => derToRaw(padded), /der/);
+  const seq = (...ints: number[][]) => { const body = ints.flatMap((v) => [0x02, v.length, ...v]); return new Uint8Array([0x30, body.length, ...body]); };
+  const one = [5];
+  assert.throws(() => derToRaw(seq([0x85], one)), /der/); // negative
+  assert.throws(() => derToRaw(seq([], one)), /der/); // empty
+  assert.throws(() => derToRaw(seq([0x00, 0x05], one)), /der/); // needless leading zero
+  assert.throws(() => derToRaw(seq([1, ...new Array(32).fill(7)], one)), /der/); // 33 bytes, no sign byte
+  assert.deepEqual([...derToRaw(seq([0x00, 0x85], one)).slice(0, 32)].slice(-1), [0x85]); // a needed zero is fine
+});
+
+test("cutover: an approval queued unchecked before the pin is checked again before storing, and withdrawn without a gap", async () => {
+  const key = await softKey(), st = storage(), b = bucket();
+  let failPuts = 0;
+  const flaky = { ...b, async put(k: string, body: string) { if (failPuts-- > 0) throw new Error("R2 down"); return b.put(k, body); } };
+  // Before the deploy: a ledger with no passkey check queues an unsigned approval (the bucket is down).
+  const old = new Ledger(st, flaky, undefined, async () => undefined);
+  const { grantHash, request } = await requested(old, "grant-cut-001");
+  failPuts = 1;
+  const unsigned = approval("grant-cut-001", request, undefined);
+  assert.equal((await old.accept(unsigned, NOW)).status, 503);
+  // After the deploy, the retry of the same bytes: refused, never stored, its number given back.
+  const now = new Ledger(st, b, undefined, approvalCheck(await pinFor(key)));
+  const o = await now.accept(unsigned, NOW);
+  assert.deepEqual([o.status, "why" in o && o.why], [409, "no passkey answer"]);
+  assert.equal(st.m.get("pending"), undefined);
+  assert.ok(![...b.store.keys()].some((k) => k.endsWith(".approval.json")));
+  // Ben's real approval then takes number 2: no gap.
+  const ok = await now.accept(approval("grant-cut-001", request, await key.answer(grantHash)), NOW);
+  assert.equal(ok.status, 201);
+  assert.equal("receipt" in ok && ok.receipt.key, keyFor(2, "grant-cut-001", "approval"));
+});
+
+test("cutover: a pending approval that passes the check is stored as before", async () => {
+  const key = await softKey(), st = storage(), b = bucket();
+  let failPuts = 0;
+  const flaky = { ...b, async put(k: string, body: string) { if (failPuts-- > 0) throw new Error("R2 down"); return b.put(k, body); } };
+  const l = new Ledger(st, flaky, undefined, approvalCheck(await pinFor(key)));
+  const { grantHash, request } = await requested(l, "grant-cut-002");
+  failPuts = 1;
+  const body = approval("grant-cut-002", request, await key.answer(grantHash));
+  assert.equal((await l.accept(body, NOW)).status, 503);
+  assert.equal((await l.accept(body, NOW)).status, 200);
+  assert.ok(b.store.has(keyFor(2, "grant-cut-002", "approval")));
+});
+
+test("cutover: a crash while withdrawing gives the number back only once", async () => {
+  const key = await softKey(), st = storage(), b = bucket();
+  let failPuts = 0, failDelete = false;
+  const flaky = { ...b, async put(k: string, body: string) { if (failPuts-- > 0) throw new Error("R2 down"); return b.put(k, body); } };
+  const old = new Ledger(st, flaky, undefined, async () => undefined);
+  const { grantHash, request } = await requested(old, "grant-cut-003");
+  failPuts = 1;
+  const unsigned = approval("grant-cut-003", request, undefined);
+  assert.equal((await old.accept(unsigned, NOW)).status, 503);
+  // The withdrawal's first write lands, then the instance dies before the pending record is cleared.
+  const crashing = { ...st, async delete(k: string) { if (failDelete) { failDelete = false; throw new Error("crash"); } return st.delete(k); } };
+  failDelete = true;
+  const pinned = approvalCheck(await pinFor(key));
+  assert.equal((await new Ledger(crashing, b, undefined, pinned).accept(unsigned, NOW)).status, 503); // caught: retry later
+  assert.ok(st.m.has("pending"));
+  const meta = st.m.get("meta") as { seq: number };
+  assert.equal(meta.seq, 1);
+  // The next instance finishes the withdrawal without giving a second number back.
+  const l = new Ledger(st, b, undefined, pinned);
+  assert.equal((await l.accept(unsigned, NOW)).status, 409);
+  assert.equal((st.m.get("meta") as { seq: number }).seq, 1);
+  const ok = await l.accept(approval("grant-cut-003", request, await key.answer(grantHash)), NOW);
+  assert.equal("receipt" in ok && ok.receipt.key, keyFor(2, "grant-cut-003", "approval"));
 });

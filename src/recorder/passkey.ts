@@ -58,12 +58,16 @@ export function approvalCheck(pin: PasskeyPin | undefined): ApprovalCheck {
       const clientBytes = unb64url(a.client_data_json as string);
       const client = JSON.parse(new TextDecoder().decode(clientBytes));
       if (client.type !== "webauthn.get") return "not a passkey sign-in";
+      // The desk's page asks directly, never from inside another site's frame.
+      if (client.crossOrigin === true || client.topOrigin !== undefined) return "not the front desk's site";
       if (typeof client.origin !== "string" || (await sha256(client.origin)) !== pin.origin_hash) return "not the front desk's site";
       const challenge = unb64url(client.challenge);
       if (challenge.length !== 48 || hex(challenge.slice(16)) !== grantHash) return "the answer is for another grant";
       const auth = unb64url(a.authenticator_data as string);
       if (auth.length < 37 || hex(auth.slice(0, 32)) !== pin.rp_hash) return "not the front desk's site";
       if ((auth[32] & 0x05) !== 0x05) return "Face ID was not used";
+      // Attested credential data never comes with a sign-in; backed up (BS) without backup-eligible (BE) is invalid.
+      if (auth[32] & 0x40 || (auth[32] & 0x18) === 0x10) return "the passkey answer could not be read";
       const signed = new Uint8Array([...auth, ...new Uint8Array(await crypto.subtle.digest("SHA-256", clientBytes))]);
       const key = await crypto.subtle.importKey("jwk", coseToJwk(unb64url(pin.key)), { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
       const ok = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, derToRaw(unb64url(a.signature as string)), signed);
@@ -92,7 +96,8 @@ export function coseToJwk(bytes: Uint8Array): JsonWebKey {
   if (bytes[i] >> 5 !== 5) throw new Error("cbor");
   const count = bytes[i++] & 0x1f, m = new Map<number, number | Uint8Array>();
   if (count > 23) throw new Error("cbor");
-  for (let k = 0; k < count; k++) { const key = item(); if (typeof key !== "number") throw new Error("cbor"); m.set(key, item()); }
+  for (let k = 0; k < count; k++) { const key = item(); if (typeof key !== "number" || m.has(key)) throw new Error("cbor"); m.set(key, item()); }
+  if (i !== bytes.length) throw new Error("cbor");
   const x = m.get(-2), y = m.get(-3);
   // kty 2 (EC2), alg -7 (ES256), crv 1 (P-256), 32-byte coordinates.
   if (m.get(1) !== 2 || m.get(3) !== -7 || m.get(-1) !== 1 || !(x instanceof Uint8Array) || !(y instanceof Uint8Array) || x.length !== 32 || y.length !== 32) throw new Error("not ES256");
@@ -109,8 +114,9 @@ export function derToRaw(der: Uint8Array): Uint8Array {
     if (der[i] !== 0x02) throw new Error("der");
     const len = der[i + 1];
     let v = der.slice(i + 2, i + 2 + len);
-    if (v.length !== len) throw new Error("der");
-    while (v.length > 32 && v[0] === 0) v = v.slice(1);
+    // DER: non-empty, positive, and minimal (a leading zero only when the next byte's top bit is set).
+    if (v.length !== len || !len || v[0] & 0x80 || (len > 1 && v[0] === 0 && !(v[1] & 0x80))) throw new Error("der");
+    if (v.length === 33 && v[0] === 0) v = v.slice(1);
     if (v.length > 32) throw new Error("der");
     out.set(v, at + 32 - v.length);
     i += 2 + len;
