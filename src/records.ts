@@ -84,7 +84,7 @@ export async function signedBy(key: CryptoKey, n: number, name: string, text: st
   const m = KEY.exec(name);
   try {
     const e = JSON.parse(text) as Envelope;
-    if (!m || Number(m[1]) !== n || !e || e.v !== 2 || e.seq !== n || e.grant !== m[2] || e.stage !== m[3] || typeof e.sig !== "string") return false;
+    if (!m || Number(m[1]) !== n || !e || e.v !== 2 || e.seq !== n || e.grant !== m[2] || e.stage !== m[3] || e.tag !== m[4] || typeof e.sig !== "string") return false;
     return await crypto.subtle.verify("Ed25519", key, unb64(e.sig), sealed(e));
   } catch {
     return false;

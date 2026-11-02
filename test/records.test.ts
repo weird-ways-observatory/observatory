@@ -253,6 +253,12 @@ test("6f681cc1: plants at the recorder's next names are foreign; its tagged and 
   assert.match(r.reason, /record 1: an object the recorder did not sign/);
   assert.match(r.reason, /record 2: an object the recorder did not sign/);
   assert.ok(!/gap|missing|unapproved|no request/.test(r.reason), r.reason);
+  // The tag is signed: the same signed bytes copied to another tagged name at that number are foreign, not a second signature.
+  b.add(`records/v1/000000000001.${G}.request.${"0".repeat(16)}.json`, b.store.get(tagged)!.body, at(-1));
+  b.add(`records/v1/000000000002.${G}.approval.${"1".repeat(16)}.json`, b.store.get(keyFor(2, G, "approval"))!.body, at(-1));
+  const e2 = env(b), r2 = await runRecords(e2, wire().fetch, NOW, await pinOf(l));
+  assert.deepEqual([r2.seq, r2.checked], [2, 2]);
+  assert.ok(!/forged|carry the recorder's signature/.test(r2.reason), r2.reason);
 });
 
 test("T2: a signed envelope copied to another number or name is foreign", async () => {

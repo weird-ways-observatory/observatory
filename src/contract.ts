@@ -40,11 +40,13 @@ export interface WriterRecord { v: 1; grant: string; stage: Stage; job: string; 
  * Version 2 (card 6a04908f) adds `sig`: the recorder's Ed25519 signature over `sealed(envelope)`,
  * so the checker can tell the recorder's copy from anything else written under the same number.
  */
-export interface Envelope { v: 1 | 2; seq: number; grant: string; stage: Stage; recorded_at: string; sha256: string; body: string; sig?: string }
+// `tag`: set only for a record stored under a random-tagged name (card 6f681cc1), and signed with the
+// rest, so a signed envelope copied to another tagged name at its number does not verify there.
+export interface Envelope { v: 1 | 2; seq: number; grant: string; stage: Stage; recorded_at: string; sha256: string; body: string; tag?: string; sig?: string }
 export interface Receipt { v: 1; seq: number; key: string; grant: string; stage: Stage; sha256: string; recorded_at: string }
 
-/** The bytes the recorder signs: every envelope field but `sig`, in this fixed order. */
-export const sealed = (e: Envelope) => new TextEncoder().encode(JSON.stringify({ v: e.v, seq: e.seq, grant: e.grant, stage: e.stage, recorded_at: e.recorded_at, sha256: e.sha256, body: e.body }));
+/** The bytes the recorder signs: every envelope field but `sig`, in this fixed order. An untagged envelope has no `tag`, which JSON leaves out, so its bytes are as before tags. */
+export const sealed = (e: Envelope) => new TextEncoder().encode(JSON.stringify({ v: e.v, seq: e.seq, grant: e.grant, stage: e.stage, recorded_at: e.recorded_at, sha256: e.sha256, body: e.body, tag: e.tag }));
 /** Bytes as base64, and back: how keys and signatures travel as text. */
 export const b64 = (bytes: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(bytes)));
 export const unb64 = (text: string) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));

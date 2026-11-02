@@ -183,11 +183,13 @@ export class Ledger {
     return true;
   }
 
-  /** The pending record under a new name at the same number, with a random tag; its receipt follows. */
+  /** The pending record under a new name at the same number, with a random tag, signed again; its receipt follows. */
   async #retag(p: Pending): Promise<Pending> {
     const tag = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, "0")).join("");
     const key = keyFor(p.receipt.seq, p.receipt.grant, p.receipt.stage, tag);
-    const moved: Pending = { ...p, key, receipt: { ...p.receipt, key } };
+    // The tag is signed with the record, so the record verifies only under this one name.
+    const stored = await this.#seal({ ...(JSON.parse(p.stored) as Envelope), tag });
+    const moved: Pending = { ...p, key, stored, storedSha: await sha256(stored), receipt: { ...p.receipt, key } };
     const g = (await this.storage.get<Grant>(`g:${p.receipt.grant}`))!;
     await this.storage.put({ pending: moved, [`g:${p.receipt.grant}`]: { ...g, stages: { ...g.stages, [p.receipt.stage]: moved.receipt } } });
     return moved;
