@@ -177,6 +177,8 @@ test("6f681cc1: an object at its next exact name moves the record to a tagged na
   assert.equal(b.store.get(keyFor(1, G, "request"))!.body, "planted"); // the plant is left for the checker to report
   assert.deepEqual((st.m.get(`g:${G}`) as { stages: { request: Receipt } }).stages.request, r); // a retry gets the same receipt
   assert.deepEqual(await l.accept(rec("request"), at(1)), { status: 200, receipt: r });
+  // The storage budget is charged the stored envelope's real size, tag included (Codex r2).
+  assert.equal((st.m.get("meta") as { bytes: number }).bytes, new TextEncoder().encode(b.store.get(r.key)!.body).length);
   const o2 = await l.accept(rec("request", {}, "grant-0002"), at(1));
   assert.ok("receipt" in o2 && o2.status === 201 && o2.receipt.seq === 2 && o2.receipt.key === keyFor(2, "grant-0002", "request"));
 });

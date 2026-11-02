@@ -191,7 +191,9 @@ export class Ledger {
     const stored = await this.#seal({ ...(JSON.parse(p.stored) as Envelope), tag });
     const moved: Pending = { ...p, key, stored, storedSha: await sha256(stored), receipt: { ...p.receipt, key } };
     const g = (await this.storage.get<Grant>(`g:${p.receipt.grant}`))!;
-    await this.storage.put({ pending: moved, [`g:${p.receipt.grant}`]: { ...g, stages: { ...g.stages, [p.receipt.stage]: moved.receipt } } });
+    // The signed tag makes the envelope longer: the storage budget is charged the difference (Codex r2).
+    const m = (await this.storage.get<Meta>("meta"))!, len = (s: string) => new TextEncoder().encode(s).length;
+    await this.storage.put({ pending: moved, meta: { ...m, bytes: m.bytes + len(stored) - len(p.stored) }, [`g:${p.receipt.grant}`]: { ...g, stages: { ...g.stages, [p.receipt.stage]: moved.receipt } } });
     return moved;
   }
 
