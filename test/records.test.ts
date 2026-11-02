@@ -975,3 +975,15 @@ test("Codex r1 #5: the old daily count's aggregate id and the old foreign id for
   await runRecords(e, wire().fetch, new Date("2026-11-02T04:30:00Z"), null);
   assert.deepEqual(listOf(e), []);
 });
+
+test("commit security review: a 'could not finish' alert that only reached the fallback is sent again once Pushover is back", async () => {
+  const b = bucket(), e = env(b);
+  b.failList();
+  await runRecords(e, wire(undefined, 503, 200).fetch, NOW, null);
+  const up = wire();
+  await runRecords(e, up.fetch, at(60), null);
+  assert.equal(msg(up).get("title"), "Observatory: the records check could not finish");
+  const again = wire();
+  await runRecords(e, again.fetch, at(120), null);
+  assert.equal(again.pushes().length, 0); // told once Pushover took it
+});

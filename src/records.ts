@@ -476,7 +476,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
         for (const i of sent) i.told = true;
         if (remind) reminded = today;
       }
-      if (via !== "none" && verdict === "unverified") unverifiedTold = true;
+      if (via === "pushover" && verdict === "unverified") unverifiedTold = true;
     }
   }
   if (verdict === "ran") reason = `${checked} new records read; ${listed.length} open incident${listed.length === 1 ? "" : "s"}${listed.length ? `: ${listed.map((i) => i.text).join("; ")}` : ""}`;
