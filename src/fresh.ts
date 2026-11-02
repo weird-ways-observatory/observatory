@@ -23,6 +23,7 @@ export interface State {
   mismatchSince?: string; // first hour main was seen ahead of DEPLOYED_SHA
   unreadableSince?: string; // first hour GitHub could not be read
   alerted?: Verdict; // the bad verdict Ben has already been told about
+  lightUp?: true; // last hour's up ping was confirmed, so a /fail now is a change that emails (card 4070b32f)
 }
 // waiting = something is off but still inside its grace window.
 export type Verdict = "healthy" | "waiting" | "not-live" | "unverified";
@@ -93,9 +94,12 @@ export async function runFresh(env: FreshEnv, fetchFn: (req: Request) => Promise
   if (ping && isBad(verdict) && state.alerted !== verdict) {
     // The fallback goes to this job's own check, never the backup check (PING_URL).
     via = await alert({ ...env, PING_URL: ping }, fetchFn, TITLES[verdict], reason);
-    state.alerted = verdict;
+    // healthchecks emails only on a change: its /fail tells Ben only if the light was confirmed up.
+    // Not told, it is tried again next hour.
+    if (via === "pushover" || (via === "healthchecks" && prev.lightUp)) state.alerted = verdict;
   }
   if (!isBad(verdict)) delete state.alerted;
+  delete state.lightUp; // set again below only once this hour's up ping is confirmed
   try {
     await env.COPY.put(STATE_KEY, JSON.stringify(state));
   } catch {
@@ -108,7 +112,9 @@ export async function runFresh(env: FreshEnv, fetchFn: (req: Request) => Promise
   // "Up" means the hourly job ran and nothing is overdue; a bad verdict is /fail every hour.
   // An alert that fell back to healthchecks has already sent /fail.
   if (ping && via !== "healthchecks") {
-    await fetchFn(new Request(isBad(verdict) ? `${ping}/fail` : ping, { method: "POST", body: JSON.stringify(report) })).catch(() => undefined);
+    const ok = await fetchFn(new Request(isBad(verdict) ? `${ping}/fail` : ping, { method: "POST", body: JSON.stringify(report) })).then((r) => r.ok, () => false);
+    // A failed save here leaves lightUp unset: the next fallback is then retried, never wrongly told.
+    if (ok && !isBad(verdict)) await env.COPY.put(STATE_KEY, JSON.stringify({ ...state, lightUp: true })).catch(() => undefined);
   }
   return report;
 }
