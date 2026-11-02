@@ -408,12 +408,13 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   // Found again: same entry (same since, same told), latest wording.
   for (const f of findings) list.set(f.id, list.has(f.id) ? { ...list.get(f.id)!, text: f.text } : { ...f, since: today, told: legacy.has(f.id) });
   // Over the bound: serious kinds first, told or not; among junk and stray, untold before told, so
-  // a flood of junk can push out only older junk and never a problem Ben has not heard of. The
+  // a flood of junk can push out only older junk; among serious kinds of one rank, untold first.
+  // Nothing is ever dropped without the counted overflow line below changing, which alerts. The
   // overflow line's id carries its count, so it alerts again whenever more are dropped.
   const more = [...list.keys()].filter((id) => kind(id) === "incidents");
   const toldMore = new Set(more.filter((id) => list.get(id)!.told));
   for (const id of more) list.delete(id);
-  let listed = [...list.values()].sort((x, y) => Number(rank(x) >= LOW) - Number(rank(y) >= LOW) || (rank(x) >= LOW ? Number(x.told) - Number(y.told) : 0) || rank(x) - rank(y));
+  let listed = [...list.values()].sort((x, y) => Number(rank(x) >= LOW) - Number(rank(y) >= LOW) || (rank(x) >= LOW ? Number(x.told) - Number(y.told) : 0) || rank(x) - rank(y) || Number(x.told) - Number(y.told));
   if (listed.length > MAX_INCIDENTS) {
     const id = `incidents:more:${listed.length - MAX_INCIDENTS + 1}`;
     listed = [...listed.slice(0, MAX_INCIDENTS - 1), { id, text: `${listed.length - MAX_INCIDENTS + 1} more incidents could not be kept: read the records`, since: today, told: toldMore.has(id) }];

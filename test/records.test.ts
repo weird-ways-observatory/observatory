@@ -884,3 +884,16 @@ test("af0e4a2f security review: among junk and strays, a new untold entry pushes
   assert.ok(listOf(e).some((i) => i.id.startsWith("stray:") && i.told));
   assert.match(msg(w).get("message")!, /something outside the record format/);
 });
+
+test("af0e4a2f security review: a list full of told plants still lists a new plant of the same rank", async () => {
+  const b = bucket(), e = env(b), l = await viaRecorder(b, [G], -10, ["request"]), pin = await pinOf(l);
+  const old = Array.from({ length: MAX_INCIDENTS }, (_, i) => ({ id: `foreign:9${i}:aaaa:bbbb`, text: `old plant ${i}`, since: "2026-10-31", told: true }));
+  await planted(b, 2, "grant-plant-a", "request", at(-5));
+  const h = await sha256(rec("request"));
+  b.setClock(at(-4)); await l.accept(rec("approval", { request: h }), () => at(-4));
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 1, sealed: { key: pin.key, to: 1 }, incidents: old }), uploaded: NOW });
+  const w = wire();
+  await runRecords(e, w.fetch, NOW, pin);
+  assert.ok(listOf(e).some((i) => i.id.startsWith("foreign:2:") && i.told), JSON.stringify(listOf(e).slice(0, 3)));
+  assert.match(msg(w).get("message")!, /^record 2: an object the recorder did not sign/m);
+});
