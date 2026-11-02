@@ -1066,3 +1066,32 @@ test("commit security review: past the dropped-id limit a new serious problem st
     assert.match(listOf(e).find((i) => i.id === "incidents:more")!.text, /cannot be told apart/);
   }
 });
+
+test("Codex r3 #1: an unreadable number stays listed under sweep pressure, and leaves only once a day's count reads it clear", async () => {
+  const grants = Array.from({ length: 7 }, (_, i) => `grant-r${i}`);
+  const b = bucket(), e = env(b), l = await viaRecorder(b, grants, -40), pin = await pinOf(l);
+  await runRecords(e, wire().fetch, NOW, pin);
+  const crowded = MAX_SWEEP_READS + 1;
+  for (let n = 1; n <= crowded; n++) await planted(b, n, `grant-p${n}`, "request", at(5));
+  const day2 = new Date("2026-11-03T04:30:00Z"), start = (Math.floor(day2.getTime() / 86_400_000) * MAX_SWEEP_READS) % crowded;
+  const n = ((start + MAX_SWEEP_READS) % crowded) + 1, id = `sweep:unreadable:${n}`;
+  b.unreadable.add(keyFor(n, `grant-p${n}`, "request"));
+  await runRecords(e, wire().fetch, new Date("2026-11-02T04:30:00Z"), pin);
+  assert.ok(listOf(e).some((i) => i.id === id));
+  // Codex's pressure, and more: three more foreign objects at every other crowded number, over the cap.
+  for (let k = 1; k <= crowded; k++) if (k !== n) for (const x of ["q1", "q2", "q3"]) await planted(b, k, `grant-${x}${String(k).padStart(2, "0")}`, "request", at(600));
+  // 11-03 skips it; 11-04 reads it, still unreadable, but its line is cut by the cap: neither is resolved.
+  for (const t of ["2026-11-03T04:30:00Z", "2026-11-03T05:30:00Z", "2026-11-04T04:30:00Z", "2026-11-04T05:30:00Z"]) {
+    await runRecords(e, wire().fetch, new Date(t), pin);
+    assert.ok(listOf(e).some((i) => i.id === id), `cut or skipped is never resolved (${t})`);
+  }
+  // Readable again: it leaves once a day's window reads that number clear, and not before.
+  b.unreadable.clear();
+  let gone = false;
+  for (let d = 5; d <= 9 && !gone; d++) {
+    await runRecords(e, wire().fetch, new Date(`2026-11-0${d}T04:30:00Z`), pin);
+    await runRecords(e, wire().fetch, new Date(`2026-11-0${d}T05:30:00Z`), pin);
+    gone = !listOf(e).some((i) => i.id === id);
+  }
+  assert.ok(gone);
+});

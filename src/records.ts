@@ -185,8 +185,9 @@ async function strays(bucket: Pick<R2Bucket, "list">): Promise<Finding[]> {
  * objects named exactly as the hourly read names them, so a plant keeps one id however many
  * records follow it (the bucket lister supplies every name; the writer supplies nothing compared).
  * `incomplete` says why the count did not read everything it should (the run is then unverified).
+ * `cleared`: numbers it read today and found readable and not crowded, counted before any cap.
  */
-async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<{ found: Finding[]; incomplete?: string; skipped: Set<number> }> {
+async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<{ found: Finding[]; incomplete?: string; cleared: Set<number> }> {
   const out: Finding[] = [], junked: Finding[] = [], shared: { n: number; cands: R2Object[] }[] = [];
   let cursor: string | undefined, last = 0, here: R2Object[] = [], over = 0, incomplete: string | undefined;
   // Junk is kept apart (bounded) so a flood of junk names can never crowd out a plant or a gap.
@@ -229,8 +230,8 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   const all = [...out, ...junked].sort((x, y) => rank(x) - rank(y)), kept = all.slice(0, MAX_SWEPT);
   over += all.length - kept.length;
   if (over) kept.push({ id: `sweep:over:${over}`, text: `${over} more findings from the daily count could not be kept: read the records` });
-  const read = new Set(window.map((w) => w.n));
-  return { found: kept, incomplete, skipped: new Set(shared.map((w) => w.n).filter((n) => !read.has(n))) };
+  const stuckAt = new Set(out.map((f) => numberOf(f.id)));
+  return { found: kept, incomplete, cleared: new Set(window.map((w) => w.n).filter((n) => !stuckAt.has(n))) };
 }
 
 export type RecordsVerdict = "ran" | "unverified";
@@ -256,6 +257,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   }
   let swept = Array.isArray(prev.swept) ? prev.swept.filter(isFinding).filter((f) => !OLD_FOREIGN.test(f.id)).slice(0, MAX_SWEPT + 1) : [];
   const findings: Finding[] = [];
+  let cleared = new Set<number>(); // set only on the daily count's hour
   let verdict: RecordsVerdict = "ran", reason = "", checked = 0;
 
   let key: CryptoKey | undefined, from = Infinity;
@@ -395,9 +397,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
       findings.push(...(await strays(env.RECORDS)));
       if (now.getUTCHours() === SWEEP_HOUR) {
         const s = await sweep(env.RECORDS, key, from, seq, now);
-        // A crowded number outside today's window was not looked at: its open problem is carried, never cleared (Codex r2 #4).
-        const carried = swept.filter((f) => s.skipped.has(numberOf(f.id)) && !s.found.some((g) => g.id === f.id));
-        swept = [...s.found, ...carried].sort((x, y) => rank(x) - rank(y)).slice(0, MAX_SWEPT + 1);
+        swept = s.found;
+        cleared = s.cleared;
         if (s.incomplete) (verdict = "unverified"), (reason = s.incomplete);
       }
     } catch {
@@ -434,7 +435,10 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   const dropped = new Set(before), fullBefore = prev.droppedFull === true;
   let droppedFull = fullBefore;
   const found = new Set(findings.map((f) => f.id));
-  if (full) for (const id of [...list.keys(), ...dropped]) if (RECHECKED.has(kind(id)) && !found.has(id)) list.delete(id), dropped.delete(id);
+  // A daily-count problem about one number leaves only when a daily count read that number and found
+  // it clear: not being looked at, or being cut by a cap, is never taken as resolved (Codex r2 #4, r3 #1).
+  const clear = (id: string) => Number.isNaN(numberOf(id)) || cleared.has(numberOf(id));
+  if (full) for (const id of [...list.keys(), ...dropped]) if (RECHECKED.has(kind(id)) && !found.has(id) && clear(id)) list.delete(id), dropped.delete(id);
   // Found again: same entry (same since, same told), latest wording. A dropped id found again was
   // already counted in the overflow line, so it is as told as that line.
   for (const f of findings) list.set(f.id, list.has(f.id) ? { ...list.get(f.id)!, text: f.text } : { ...f, since: today, told: legacy.has(f.id) || (dropped.has(f.id) && lastMore?.told === true) });
