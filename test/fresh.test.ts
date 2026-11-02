@@ -96,7 +96,7 @@ test("main ahead: waiting for 6 hours, then one alert, /fail every hour, cleared
   w.state.main = LIVE;
   assert.equal((await runFresh(e, w.fetch, at(8))).fresh, "healthy");
   assert.equal(w.hc().at(-1), "/hour");
-  assert.deepEqual(JSON.parse(copy.store.get(STATE_KEY)!), { lightUp: true });
+  assert.deepEqual(JSON.parse(copy.store.get(STATE_KEY)!), { upAt: at(8).toISOString() });
 });
 
 test("GitHub unreadable (rate limit): waiting under 3 hours, then unverified -- never healthy", async () => {
@@ -167,6 +167,20 @@ test("an up ping healthchecks did not confirm does not make the next fallback co
   w.state.hc = 200;
   for (let h = 6; h <= 7; h++) await runFresh(e, w.fetch, at(h));
   assert.equal(w.pushes(), 2, "the light was never confirmed up, so hour 6 is tried again at hour 7");
+});
+
+test("a failed save after the fallback turned the light red leaves no stale green to trust (Codex r1 on 4070b32f)", async () => {
+  const copy = bucket();
+  let failPut = false;
+  const flaky = { ...copy, put: async (k: string, v: string) => { if (failPut) throw new Error("R2 down"); return copy.put(k, v); } };
+  const e = env({ COPY: flaky }), w = wire({ main: AHEAD, pushover: 500 });
+  for (let h = 0; h < 6; h++) await runFresh(e, w.fetch, at(h)); // waiting: up pings confirmed
+  failPut = true;
+  await runFresh(e, w.fetch, at(6)); // the fallback /fail turns the light red; nothing is saved
+  failPut = false;
+  e.DEPLOYED_SHA = ""; // a different bad verdict, straight away
+  for (let h = 7; h <= 8; h++) await runFresh(e, w.fetch, at(h));
+  assert.equal(w.pushes(), 3, "unverified is tried at hours 7 and 8: the green seen at hour 5 is stale");
 });
 
 test("neither channel takes the alert: it is tried again next hour", async () => {
