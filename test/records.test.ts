@@ -233,7 +233,7 @@ test("T1: a planted copy beside a signed record is foreign; the signed one count
   assert.deepEqual([r.records, r.seq, r.checked], ["ran", 2, 2]);
   assert.equal((r.reason.match(/record 2: an object the recorder did not sign/g) ?? []).length, 2);
   assert.ok(!/grant-plant-a/.test(r.reason));
-  assert.deepEqual(w.hc(), ["/rec"]); // af0e4a2f: the light says the checker ran; the plant is an incident
+  assert.deepEqual(w.hc(), ["/rec", "/rec"]); // af0e4a2f: the light says the checker ran (green before and after the alert); the plant is an incident
   // The recorder's own record counted in order: its result is not "unapproved".
   const h = await sha256(rec("request"));
   b.setClock(at(1)); await l.accept(rec("result", { request: h }), () => at(1));
@@ -621,7 +621,7 @@ test("the incident list is bounded, with a line saying more were dropped", async
   await runRecords(e, wire().fetch, NOW, null);
   const list = listOf(e);
   assert.equal(list.length, MAX_INCIDENTS);
-  assert.ok(list.some((i) => i.id === "incidents:more:21"));
+  assert.ok(list.some((i) => i.id === "incidents:more" && i.text.startsWith("21 more incidents")));
 });
 
 test("without its own check it only logs: no alert, nothing claims healthy", async () => {
@@ -698,7 +698,7 @@ test("af0e4a2f: with one plant open, a second plant and a weakened lock each ale
   const b = bucket(), e = env(b), l = await viaRecorder(b, [G], -10, ["request", "approval"]), pin = await pinOf(l);
   await planted(b, 2, "grant-plant-a", "request", at(-5));
   const w1 = wire(), r1 = await runRecords(e, w1.fetch, NOW, pin);
-  assert.deepEqual([r1.records, r1.open, r1.new, w1.pushes().length, w1.hc()], ["ran", 1, 1, 1, ["/rec"]]);
+  assert.deepEqual([r1.records, r1.open, r1.new, w1.pushes().length, w1.hc()], ["ran", 1, 1, 1, ["/rec", "/rec"]]);
   const w2 = wire(), r2 = await runRecords(e, w2.fetch, at(60), pin);
   assert.deepEqual([r2.open, r2.new, w2.pushes().length, w2.hc()], [1, 0, 0, ["/rec"]]);
   // A second plant: record 1's signed bytes copied under the next number, before the recorder writes it.
@@ -706,18 +706,19 @@ test("af0e4a2f: with one plant open, a second plant and a weakened lock each ale
   const h = await sha256(rec("request"));
   b.setClock(at(62)); await l.accept(rec("verdict", { request: h }), () => at(62));
   const w3 = wire(), r3 = await runRecords(e, w3.fetch, at(120), pin);
-  assert.deepEqual([r3.records, r3.open, r3.new, w3.pushes().length, w3.hc()], ["ran", 2, 1, 1, ["/rec"]]);
+  assert.deepEqual([r3.records, r3.open, r3.new, w3.pushes().length, w3.hc()], ["ran", 2, 1, 1, ["/rec", "/rec"]]);
   assert.match(msg(w3).get("message")!, /^record 3: an object the recorder did not sign/);
   const w4 = wire([{ id: "r", enabled: true, prefix: "records/", condition: { type: "Age", maxAgeSeconds: 86_400 } }]), r4 = await runRecords(e, w4.fetch, at(180), pin);
-  assert.deepEqual([r4.open, r4.new, w4.pushes().length, w4.hc()], [3, 1, 1, ["/rec"]]);
+  assert.deepEqual([r4.open, r4.new, w4.pushes().length, w4.hc()], [3, 1, 1, ["/rec", "/rec"]]);
   assert.match(msg(w4).get("message")!, /records lock/);
   // The lock is put right: a full run no longer finds it, so it leaves; the plants stay.
   assert.equal((await runRecords(e, wire().fetch, at(240), pin)).open, 2);
   b.setClock(at(241)); await l.accept(rec("result", { request: h }), () => at(241));
   b.unreadable.add(keyFor(4, G, "result"));
   const w5 = wire(), r5 = await runRecords(e, w5.fetch, at(300), pin);
-  assert.deepEqual([r5.records, r5.open, w5.hc()], ["unverified", 2, ["/rec/fail"]]);
+  assert.deepEqual([r5.records, r5.open, r5.new, w5.hc()], ["unverified", 3, 1, ["/rec/fail"]]); // the unreadable record is its own new entry; nothing removed
   assert.equal(msg(w5).get("title"), "Observatory: the records check could not finish");
+  assert.match(msg(w5).get("message")!, /\nrecord 4 could not be read$/);
 });
 
 test("af0e4a2f: the daily count names a plant by the object, with the hourly read's id, and the id stays put as real records are added", async () => {
@@ -761,8 +762,8 @@ test("af0e4a2f: the weekly reminder lists what is open once a week, and only whe
   const mon = wire();
   await runRecords(e, mon.fetch, new Date("2026-11-02T14:30:00Z"), null);
   assert.equal(mon.pushes().length, 1);
-  assert.equal(msg(mon).get("title"), "Observatory: 1 open records incident");
-  assert.equal(msg(mon).get("message"), "1 open records incident:\nrecords lock not checked: LOCK_READ_TOKEN is not set yet, since 2026-11-01\n");
+  assert.equal(msg(mon).get("title"), "Observatory: open records incidents this week");
+  assert.equal(msg(mon).get("message"), "1 open records incident: records lock not checked: LOCK_READ_TOKEN is not set yet, since 2026-11-01");
   const later = wire();
   await runRecords(e, later.fetch, new Date("2026-11-02T15:30:00Z"), null);
   assert.equal(later.pushes().length, 0);
@@ -779,7 +780,7 @@ test("af0e4a2f: Pushover down, the alert goes to the check as /fail and counts a
   await planted(b, 1, G, "result", at(-1));
   const w = wire(undefined, 503, 200);
   await runRecords(e, w.fetch, NOW, null);
-  assert.deepEqual(w.hc(), ["/rec/fail", "/rec"]);
+  assert.deepEqual(w.hc(), ["/rec", "/rec/fail", "/rec"]); // green first, so the /fail is a change healthchecks emails
   assert.ok((await ids(e)).some((id) => id.startsWith("unrecorded:")));
   const next = wire();
   await runRecords(e, next.fetch, at(60), null);
@@ -805,7 +806,7 @@ test("af0e4a2f change-over: what the old checker told stays told and its undeliv
   const w = wire();
   const r = await runRecords(e, w.fetch, NOW, null);
   assert.deepEqual([r.open, r.new, w.pushes().length], [2, 1, 1]);
-  assert.equal(msg(w).get("message"), "an undelivered finding\n");
+  assert.equal(msg(w).get("message"), "an undelivered finding");
   assert.ok(listOf(e).every((i) => i.told));
 });
 
@@ -860,7 +861,7 @@ test("af0e4a2f security review: a full list keeps serious incidents, told or not
   assert.equal(list.length, MAX_INCIDENTS);
   assert.ok(!list.some((i) => i.id.startsWith("stray:")));
   assert.equal(list.filter((i) => i.id.startsWith("unrecorded:")).length, MAX_INCIDENTS - 1);
-  assert.ok(list.some((i) => i.id === "incidents:more:2" && i.told));
+  assert.ok(list.some((i) => i.id === "incidents:more" && i.told));
   assert.match(msg(w).get("message")!, /2 more incidents could not be kept/);
 });
 
@@ -896,4 +897,81 @@ test("af0e4a2f security review: a list full of told plants still lists a new pla
   await runRecords(e, w.fetch, NOW, pin);
   assert.ok(listOf(e).some((i) => i.id.startsWith("foreign:2:") && i.told), JSON.stringify(listOf(e).slice(0, 3)));
   assert.match(msg(w).get("message")!, /^record 2: an object the recorder did not sign/m);
+});
+
+// Codex r1 (af0e4a2f) counterexamples, each as Codex described it.
+test("Codex r1 #1: with a full list, a second new problem in a later hour alerts again through the overflow line", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  const full = Array.from({ length: MAX_INCIDENTS }, (_, i) => ({ id: `unrecorded:old${i}`, text: `old ${i}`, since: "2026-10-31", told: true }));
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 4, incidents: full }), uploaded: NOW });
+  b.add("loose-a", "{}", at(-1));
+  const w1 = wire();
+  await runRecords(e, w1.fetch, NOW, null);
+  assert.match(msg(w1).get("message")!, /2 more incidents could not be kept/);
+  b.add("loose-b", "{}", at(1));
+  const w2 = wire(), r2 = await runRecords(e, w2.fetch, at(60), null);
+  assert.deepEqual([r2.new, w2.pushes().length], [1, 1]);
+  assert.match(msg(w2).get("message")!, /3 more incidents could not be kept/);
+  const w3 = wire();
+  await runRecords(e, w3.fetch, at(120), null); // nothing new: quiet
+  assert.equal(w3.pushes().length, 0);
+});
+
+test("Codex r1 #2: on a run that could not finish, a fallback /fail does not count as delivered; one alert a run", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b, [G], -10, ["request", "approval"]);
+  await planted(b, 3, "grant-xxxx", "result", at(-1));
+  b.add(keyFor(4, "grant-yyyy", "request"), "{}", at(-1));
+  b.unreadable.add(keyFor(4, "grant-yyyy", "request"));
+  const down = wire(undefined, 503, 200), r = await runRecords(e, down.fetch, NOW, null);
+  assert.equal(r.records, "unverified");
+  assert.deepEqual(down.hc(), ["/rec/fail", "/rec/fail"]); // the one alert's fallback, then the light
+  assert.equal(down.pushes().length, 1);
+  assert.ok(listOf(e).every((i) => !i.told));
+  b.unreadable.clear();
+  const up = wire();
+  await runRecords(e, up.fetch, at(60), null);
+  assert.match(msg(up).get("message")!, /ran unrecorded/);
+});
+
+test("Codex r1 #3: a second unreadable record in a later hour is a new entry and alerts", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  b.unreadable.add(keyFor(1, G, "request"));
+  const w1 = wire(), r1 = await runRecords(e, w1.fetch, NOW, null);
+  assert.deepEqual([r1.records, r1.new, w1.pushes().length], ["unverified", 1, 1]);
+  b.unreadable.clear();
+  b.unreadable.add(keyFor(2, G, "verdict"));
+  const w2 = wire(), r2 = await runRecords(e, w2.fetch, at(60), null);
+  assert.deepEqual([r2.records, r2.new, w2.pushes().length], ["unverified", 1, 1]);
+  assert.match(msg(w2).get("message")!, /record 2 could not be read/);
+  assert.deepEqual(listOf(e).filter((i) => i.id.startsWith("unreadable:")).map((i) => i.id).sort(), ["unreadable:1", "unreadable:2"]);
+  b.unreadable.clear();
+  await runRecords(e, wire().fetch, at(120), null); // a full run no longer finds them
+  assert.ok(!listOf(e).some((i) => i.id.startsWith("unreadable:")));
+});
+
+test("Codex r1 #4: a daily count that cannot read an extra object, or cannot finish listing, turns the light red and keeps what it found", async () => {
+  const b = bucket(), e = env(b), l = await viaRecorder(b, [G], -10, ["request", "approval"]), pin = await pinOf(l);
+  await runRecords(e, wire().fetch, NOW, pin);
+  await planted(b, 1, "grant-late", "request", at(5));
+  b.unreadable.add(keyFor(1, "grant-late", "request"));
+  const w = wire(), r = await runRecords(e, w.fetch, new Date("2026-11-02T04:30:00Z"), pin);
+  assert.deepEqual([r.records, w.hc().at(-1)], ["unverified", "/rec/fail"]);
+  assert.ok(listOf(e).some((i) => i.id === "sweep:unreadable:1"));
+  const tiny = bucket(1), t = env(tiny);
+  for (let i = 0; i < 205; i++) tiny.add(`records/v1/~junk${String(i).padStart(3, "0")}`, "{}", at(-1));
+  const r2 = await runRecords(t, wire().fetch, new Date("2026-11-02T04:30:00Z"), null);
+  assert.deepEqual([r2.records, r2.reason], ["unverified", "over 200000 records: the daily count could not finish"]);
+  assert.ok(listOf(t).some((i) => i.id.startsWith("junk:")));
+});
+
+test("Codex r1 #5: the old daily count's aggregate id and the old foreign id form are dropped at change-over", async () => {
+  const b = bucket(), e = env(b);
+  await viaRecorder(b);
+  e.COPY.store.set(STATE_KEY, { body: JSON.stringify({ seq: 4, swept: [{ id: "foreign:5", text: "the bucket holds 5 records but the recorder numbered 4" }], queued: [{ id: "foreign:2:abcdefabcdef", text: "old form" }] }), uploaded: NOW });
+  await runRecords(e, wire().fetch, NOW, null);
+  await runRecords(e, wire().fetch, new Date("2026-11-02T04:30:00Z"), null);
+  assert.deepEqual(listOf(e), []);
 });

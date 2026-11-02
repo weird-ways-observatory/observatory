@@ -39,6 +39,7 @@ export const MAX_SWEPT = 50;
 export const MAX_NAMES_AT = 1_000; // names listed under one record number before the hour gives up as unverified
 export const MAX_COPIES = 20; // objects read at one record number before the hour gives up as unverified
 export const MAX_INCIDENTS = 200; // open incidents kept, worst first
+export const MAX_DROPPED = 5_000; // ids of incidents with no room, kept so the overflow line knows what is new
 export const MAX_SWEEP_READS = 20; // record numbers with extra names the daily count reads
 export const REMIND_DAY = 1, REMIND_HOUR = 14; // UTC Monday 14:00 (8 am Central): the weekly list of what is open
 
@@ -50,7 +51,7 @@ interface Open { job: string; req: string; at: number; stages: Stage[] }
 // `sealed`: numbers from the pin's start up to `to` were confirmed signed under the pin with this key.
 // `held`/`snap` come only from the checker before signing; they are read once, never saved again.
 // `alerted`/`queued` come only from the checker before af0e4a2f: read once to carry what was told.
-interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[] }
+interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedMore?: number; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[] }
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -66,14 +67,14 @@ const pad = (n: number) => String(n).padStart(12, "0");
  */
 export const fp = async (grant: string) => `#${(await sha256(grant)).slice(0, 16)}`;
 // Worst first: what ran unrecorded or unchecked before what is merely malformed.
-const RANK = ["forged", "missing", "unsigned", "unrecorded", "unapproved", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "cap", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
+const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "cap", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
 const LOW = RANK.indexOf("junk"); // junk and stray: cheap for a writer to make by the thousand
 const kind = (id: string) => id.split(":")[0];
 const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 ? RANK.length : i; };
 // Kinds a full run computes afresh (`sweep`: carried hourly from the last daily count): they leave
 // the list when a full run no longer finds them. Every other kind is about a record read once and
 // locked for 400 days, so it stays listed.
-const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep"]);
+const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep", "unreadable"]);
 const isFinding = <T>(f: T): f is T & Finding => typeof (f as Finding)?.id === "string" && typeof (f as Finding)?.text === "string";
 
 /** Checks one stored record on its own: its envelope against its name and R2's upload time, then the writer's body. */
@@ -123,6 +124,11 @@ async function sealsAt(bucket: Pick<R2Bucket, "get">, key: CryptoKey, n: number,
   }
   return { seals, foreign, unreadable };
 }
+// A number the run could not read: the light goes red, and each such number is its own incident.
+const stuck = (n: number, text: string): Finding => ({ id: `unreadable:${n}`, text });
+// Ids written before af0e4a2f that name no exact object: the old daily count (`foreign:<count>`)
+// and the old foreign id without a content fingerprint. Dropped at load; the daily count re-finds plants.
+const OLD_FOREIGN = /^foreign:\d+(:[0-9a-f]{12})?$/;
 const forged = (n: number, count: number): Finding => ({ id: `forged:${n}`, text: `${count} objects at record number ${n} carry the recorder's signature: its key may be stolen` });
 
 /** The order check for one record, against the grants seen so far. Updates `open`. */
@@ -176,17 +182,18 @@ async function strays(bucket: Pick<R2Bucket, "list">): Promise<Finding[]> {
  * record. Numbers holding more than one name are read (up to MAX_SWEEP_READS) and their extra
  * objects named exactly as the hourly read names them, so a plant keeps one id however many
  * records follow it (the bucket lister supplies every name; the writer supplies nothing compared).
+ * `incomplete` says why the count did not read everything it should (the run is then unverified).
  */
-async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<Finding[]> {
+async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<{ found: Finding[]; incomplete?: string }> {
   const out: Finding[] = [], junked: Finding[] = [], shared: { n: number; cands: R2Object[] }[] = [];
-  let cursor: string | undefined, last = 0, here: R2Object[] = [], over = 0;
+  let cursor: string | undefined, last = 0, here: R2Object[] = [], over = 0, incomplete: string | undefined;
   // Junk is kept apart (bounded) so a flood of junk names can never crowd out a plant or a gap.
   const add = (f: Finding) => out.push(f);
   const close = () => { if (here.length > 1) shared.push({ n: last, cands: here }); };
   const lost = (to: number) => { for (let n = last + 1; n < to; n++) if (out.length < MAX_SWEPT) add({ id: `missing:${n}`, text: `record ${n} is gone from the bucket: something deleted or renamed it` }); else over++; };
   for (let pages = 0; ; pages++) {
     if (pages === SWEEP_PAGES) {
-      add({ id: "sweep:incomplete", text: `over ${SWEEP_PAGES * 1000} records: the daily count could not finish` });
+      add({ id: "sweep:incomplete", text: (incomplete = `over ${SWEEP_PAGES * 1000} records: the daily count could not finish`) });
       break;
     }
     const page = await bucket.list({ prefix: ROOT, cursor, limit: 1000 });
@@ -206,12 +213,12 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   // A different window of crowded numbers each day, so a plant past the first few is still read.
   const start = shared.length > MAX_SWEEP_READS ? (Math.floor(now.getTime() / 86_400_000) * MAX_SWEEP_READS) % shared.length : 0;
   for (const { n, cands } of [...shared, ...shared].slice(start, start + Math.min(MAX_SWEEP_READS, shared.length))) {
-    if (cands.length > MAX_COPIES) add({ id: `sweep:crowded:${n}`, text: `${cands.length} objects share record number ${n}: the daily count could not read them` });
+    if (cands.length > MAX_COPIES) add({ id: `sweep:crowded:${n}`, text: (incomplete = `${cands.length} objects share record number ${n}: the daily count could not read them`) });
     else if (key && n >= from) {
       const s = await sealsAt(bucket, key, n, cands);
       s.foreign.forEach(add);
       if (s.seals.length > 1) add(forged(n, s.seals.length));
-      if (s.unreadable) add({ id: `sweep:unreadable:${n}`, text: `record ${n}: an object there could not be read by the daily count` });
+      if (s.unreadable) add({ id: `sweep:unreadable:${n}`, text: (incomplete = `record ${n}: an object there could not be read by the daily count`) });
     } else add({ id: `duplicate-number:${n}`, text: `${cands.length} objects share record number ${n}, found by the daily count: something wrote around the recorder` });
   }
   // Counts are part of these ids: when the hidden amount changes, Ben hears again.
@@ -219,7 +226,7 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   const all = [...out, ...junked].sort((x, y) => rank(x) - rank(y)), kept = all.slice(0, MAX_SWEPT);
   over += all.length - kept.length;
   if (over) kept.push({ id: `sweep:over:${over}`, text: `${over} more findings from the daily count could not be kept: read the records` });
-  return kept;
+  return { found: kept, incomplete };
 }
 
 export type RecordsVerdict = "ran" | "unverified";
@@ -243,7 +250,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     if (prev.snap && Number.isInteger(prev.snap.seq)) ({ seq } = prev.snap), (open = bare<Open>(prev.snap.open)), (days = bare<number>(prev.snap.days));
     else if (n.length) seq = Math.min(seq, Math.min(...n) - 1);
   }
-  let swept = Array.isArray(prev.swept) ? prev.swept.filter(isFinding).slice(0, MAX_SWEPT + 1) : [];
+  let swept = Array.isArray(prev.swept) ? prev.swept.filter(isFinding).filter((f) => !OLD_FOREIGN.test(f.id)).slice(0, MAX_SWEPT + 1) : [];
   const findings: Finding[] = [];
   let verdict: RecordsVerdict = "ran", reason = "", checked = 0;
 
@@ -267,9 +274,15 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
       while (sealedTo < seq && checked < PAGE) {
         const n = sealedTo + 1, here = await namesAt(env.RECORDS, `${ROOT}${pad(n)}.`);
         for (const k of here.junk) findings.push(await junk(k));
-        if (here.capped || here.cands.length > MAX_COPIES) throw new Error("too many");
+        if (here.capped || here.cands.length > MAX_COPIES) {
+          findings.push(stuck(n, `record ${n}: too many objects there to read`));
+          throw new Error("too many");
+        }
         const s = await sealsAt(env.RECORDS, key, n, here.cands);
-        if (s.unreadable) throw new Error("unreadable");
+        if (s.unreadable) {
+          findings.push(stuck(n, `record ${n} could not be read`));
+          throw new Error("unreadable");
+        }
         findings.push(...s.foreign);
         if (s.seals.length > 1) {
           findings.push(forged(n, s.seals.length));
@@ -298,7 +311,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
         for (const k of here.junk) findings.push(await junk(k));
         if (here.capped) {
           verdict = "unverified";
-          reason = `over ${MAX_NAMES_AT} names at record number ${next}: it could not be read`;
+          findings.push(stuck(next, (reason = `over ${MAX_NAMES_AT} names at record number ${next}: it could not be read`)));
           break;
         }
         const cands = here.cands;
@@ -313,7 +326,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
         }
         if (cands.length > MAX_COPIES) {
           verdict = "unverified";
-          reason = `${cands.length} objects share record number ${next}, over ${MAX_COPIES}: it could not be read`;
+          findings.push(stuck(next, (reason = `${cands.length} objects share record number ${next}, over ${MAX_COPIES}: it could not be read`)));
           break;
         }
         let o = cands[0], body: string | null | undefined; // undefined: not read yet; null: not checked
@@ -330,7 +343,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
           }
           if (unreadable) {
             verdict = "unverified";
-            reason = `record ${next} could not be read`;
+            findings.push(stuck(next, (reason = `record ${next} could not be read`)));
             break;
           }
           if (!seals.length) break;
@@ -354,7 +367,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
             if (body === null) {
               // Stop here and read it again next hour: the bookmark never passes a record not checked.
               verdict = "unverified";
-              reason = `record ${next} could not be read`;
+              findings.push(stuck(next, (reason = `record ${next} could not be read`)));
               break;
             }
           }
@@ -376,7 +389,11 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
       }
       if (checked === PAGE && verdict === "ran") findings.push({ id: `backlog:${day(now)}`, text: `${PAGE} new records in an hour, over what the recorder can take: the rest are read next hour` });
       findings.push(...(await strays(env.RECORDS)));
-      if (now.getUTCHours() === SWEEP_HOUR) swept = await sweep(env.RECORDS, key, from, seq, now);
+      if (now.getUTCHours() === SWEEP_HOUR) {
+        const s = await sweep(env.RECORDS, key, from, seq, now);
+        swept = s.found;
+        if (s.incomplete) (verdict = "unverified"), (reason = s.incomplete);
+      }
     } catch {
       verdict = "unverified";
       reason = "the records could not be listed";
@@ -402,57 +419,69 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   const legacy = new Set(Array.isArray(prev.alerted) ? prev.alerted : []);
   const list = new Map<string, Incident>();
   const kept = [...(Array.isArray(prev.incidents) ? prev.incidents : []), ...(Array.isArray(prev.queued) ? prev.queued : [])] as Partial<Incident>[];
-  for (const i of kept) if (isFinding(i) && !list.has(i.id)) list.set(i.id, { id: i.id, text: i.text, since: typeof i.since === "string" ? i.since : today, told: i.told === true });
+  for (const i of kept) if (isFinding(i) && !OLD_FOREIGN.test(i.id) && !list.has(i.id)) list.set(i.id, { id: i.id, text: i.text, since: typeof i.since === "string" ? i.since : today, told: i.told === true });
+  // Incidents the list had no room for, by id only: Ben hears of them through one overflow line,
+  // which alerts again whenever an id joins the set (or the uncounted rest grows).
+  const lastMore = list.get("incidents:more");
+  list.delete("incidents:more");
+  const before = new Set(Array.isArray(prev.dropped) ? prev.dropped.filter((x): x is string => typeof x === "string") : []);
+  const dropped = new Set(before), moreBefore = Number.isInteger(prev.droppedMore) ? prev.droppedMore! : 0;
+  let droppedMore = moreBefore;
   const found = new Set(findings.map((f) => f.id));
-  if (full) for (const id of list.keys()) if (RECHECKED.has(kind(id)) && !found.has(id)) list.delete(id);
-  // Found again: same entry (same since, same told), latest wording.
-  for (const f of findings) list.set(f.id, list.has(f.id) ? { ...list.get(f.id)!, text: f.text } : { ...f, since: today, told: legacy.has(f.id) });
+  if (full) for (const id of [...list.keys(), ...dropped]) if (RECHECKED.has(kind(id)) && !found.has(id)) list.delete(id), dropped.delete(id);
+  // Found again: same entry (same since, same told), latest wording. A dropped id found again was
+  // already counted in the overflow line, so it is as told as that line.
+  for (const f of findings) list.set(f.id, list.has(f.id) ? { ...list.get(f.id)!, text: f.text } : { ...f, since: today, told: legacy.has(f.id) || (dropped.has(f.id) && lastMore?.told === true) });
   // Over the bound: serious kinds first, told or not; among junk and stray, untold before told, so
   // a flood of junk can push out only older junk; among serious kinds of one rank, untold first.
-  // Nothing is ever dropped without the counted overflow line below changing, which alerts. The
-  // overflow line's id carries its count, so it alerts again whenever more are dropped.
-  const more = [...list.keys()].filter((id) => kind(id) === "incidents");
-  const toldMore = new Set(more.filter((id) => list.get(id)!.told));
-  for (const id of more) list.delete(id);
   let listed = [...list.values()].sort((x, y) => Number(rank(x) >= LOW) - Number(rank(y) >= LOW) || (rank(x) >= LOW ? Number(x.told) - Number(y.told) : 0) || rank(x) - rank(y) || Number(x.told) - Number(y.told));
-  if (listed.length > MAX_INCIDENTS) {
-    const id = `incidents:more:${listed.length - MAX_INCIDENTS + 1}`;
-    listed = [...listed.slice(0, MAX_INCIDENTS - 1), { id, text: `${listed.length - MAX_INCIDENTS + 1} more incidents could not be kept: read the records`, since: today, told: toldMore.has(id) }];
+  const room = dropped.size || droppedMore || listed.length > MAX_INCIDENTS ? MAX_INCIDENTS - 1 : MAX_INCIDENTS;
+  for (const i of listed.slice(room)) dropped.add(i.id);
+  listed = listed.slice(0, room);
+  for (const i of listed) dropped.delete(i.id);
+  for (const id of [...dropped].slice(MAX_DROPPED)) dropped.delete(id), droppedMore++;
+  if (dropped.size || droppedMore) {
+    const grew = droppedMore > moreBefore || [...dropped].some((id) => !before.has(id));
+    listed.push({ id: "incidents:more", text: `${dropped.size + droppedMore} more incidents could not be kept: read the records`, since: lastMore?.since ?? today, told: lastMore?.told === true && !grew });
   }
   listed.sort((x, y) => rank(x) - rank(y));
   const fresh = listed.filter((i) => !i.told);
   const ping = env.PING_URL_RECORDS;
 
-  /** One alert of as many lines as fit, worst first; returns those that fit if a channel took it. */
-  const tell = async (title: string, head: string, items: Incident[], line: (i: Incident) => string) => {
-    const sent: Incident[] = [];
-    let text = head;
-    for (const i of items) {
-      const l = `${line(i).slice(0, 300)}\n`;
-      if (text.length + l.length > 900) break;
-      text += l;
-      sent.push(i);
-    }
-    if (sent.length < items.length) text += `(+${items.length - sent.length} more)`;
-    return (await alert({ ...env, PING_URL: ping! }, fetchFn, title, text)) === "none" ? [] : sent;
-  };
   // Until Ben creates this job's check, it only logs (like fresh.ts): no alert, no light.
   let unverifiedTold = verdict === "unverified" && (prev.unverifiedTold === true || legacy.has("unverified"));
   let reminded = typeof prev.reminded === "string" ? prev.reminded : undefined;
   if (ping) {
-    // Told only if a channel took it; the rest are tried again next hour. If Pushover is down the
-    // alert goes to the light's own check as /fail (email); the run's ping below follows at once,
-    // so the light shows the run again and the incident still counts as delivered.
-    if (fresh.length) for (const i of await tell(`Observatory: ${fresh.length} new records incident${fresh.length === 1 ? "" : "s"}`, "", fresh, (i) => i.text)) i.told = true;
-    if (verdict === "unverified" && !unverifiedTold) unverifiedTold = (await alert({ ...env, PING_URL: ping }, fetchFn, "Observatory: the records check could not finish", reason)) !== "none";
-    if (listed.length && now.getUTCDay() === REMIND_DAY && now.getUTCHours() >= REMIND_HOUR && reminded !== today) {
-      const n = `${listed.length} open records incident${listed.length === 1 ? "" : "s"}`;
-      if ((await tell(`Observatory: ${n}`, `${n}:\n`, listed, (i) => `${i.text}, since ${i.since}`)).length) reminded = today;
+    // At most one alert a run, worst first. Its fallback is the light's own check, and healthchecks
+    // emails only when a check changes state (Codex r1 #2, from its source), so a second /fail, or
+    // a /fail while the light is already red, may email nothing.
+    const lines: string[] = [], sent: Incident[] = [];
+    const remind = listed.length > 0 && now.getUTCDay() === REMIND_DAY && now.getUTCHours() >= REMIND_HOUR && reminded !== today;
+    if (verdict === "unverified" && !unverifiedTold) lines.push(`The records check could not finish: ${reason}`.slice(0, 300));
+    for (const i of fresh) {
+      if ([...lines, i.text.slice(0, 300)].join("\n").length > 800) break;
+      lines.push(i.text.slice(0, 300));
+      sent.push(i);
+    }
+    if (sent.length < fresh.length) lines.push(`(+${fresh.length - sent.length} more new, sent next hour)`);
+    // The weekly reminder: one line.
+    if (remind) lines.push(`${listed.length} open records incident${listed.length === 1 ? "" : "s"}: ${listed[0].text.slice(0, 150)}, since ${listed[0].since}${listed.length > 1 ? `; +${listed.length - 1} more` : ""}`);
+    if (lines.length) {
+      const title = verdict === "unverified" && !unverifiedTold ? "Observatory: the records check could not finish" : sent.length ? `Observatory: ${sent.length} new records incident${sent.length === 1 ? "" : "s"}` : "Observatory: open records incidents this week";
+      // A run that read everything turns the light green first, so a fallback /fail is a change that emails.
+      if (verdict === "ran") await fetchFn(new Request(ping, { method: "POST", body: "run complete; an alert follows" })).catch(() => undefined);
+      const via = await alert({ ...env, PING_URL: ping }, fetchFn, title, lines.join("\n"));
+      // On an unverified run the light may already be red: only Pushover counts as delivered.
+      if (via === "pushover" || (via === "healthchecks" && verdict === "ran")) {
+        for (const i of sent) i.told = true;
+        if (remind) reminded = today;
+      }
+      if (via !== "none" && verdict === "unverified") unverifiedTold = true;
     }
   }
   if (verdict === "ran") reason = `${checked} new records read; ${listed.length} open incident${listed.length === 1 ? "" : "s"}${listed.length ? `: ${listed.map((i) => i.text).join("; ")}` : ""}`;
   try {
-    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, unverifiedTold, reminded } satisfies State));
+    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedMore, unverifiedTold, reminded } satisfies State));
   } catch {
     reason = `records state could not be saved; ${reason}`;
     verdict = "unverified";
