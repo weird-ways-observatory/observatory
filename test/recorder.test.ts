@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { DAY_CAP, keyFor, MAX_RECORD_BYTES, MAX_STORED_BYTES, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt } from "../src/contract.ts";
 import { admit, resetCerts, type AccessEnv } from "../src/recorder/access.ts";
 import { handle } from "../src/recorder/http.ts";
-import { Ledger, type Storage } from "../src/recorder/ledger.ts";
+import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
+import { STORE_BUDGET_BYTES as TEST_BUDGET } from "../src/contract.ts";
+// Ordering, slot and storage tests: approvals are taken without the passkey check, which has its own
+// tests (passkey.test.ts) driving the real Ledger with a test pin.
+class TestLedger extends Ledger {
+  constructor(s: Storage, b: Bucket, budget = TEST_BUDGET) { super(s, b, budget, async () => undefined); }
+}
 
 const NOW = new Date("2026-11-01T12:30:00Z");
 const MIN = 60_000;
@@ -42,7 +48,7 @@ const rec = (stage: string, over: object = {}, grant = G) => JSON.stringify({ v:
 
 /** A grant's request, then a later stage that names it by hash. */
 async function setup() {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const req = rec("request");
   const r1 = await l.accept(req, at(0));
   const h = await sha256(req);
@@ -86,7 +92,7 @@ test("request, approval, verdict, result: stored in order with gap-free names an
 });
 
 test("out of order: approval, verdict or result with no request; result with no approval -- all refused, nothing stored", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   for (const s of ["approval", "verdict", "result"]) {
     const o = await l.accept(rec(s, { request: "a".repeat(64) }), at(0));
     assert.deepEqual([o.status, "why" in o && o.why], [409, "no request is recorded for this grant"]);
@@ -107,7 +113,7 @@ test("later stages must name the recorded request's exact bytes and job", async 
 });
 
 test("a grant spanning midnight is fine; one over 24 hours old is closed", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const req = rec("request"), h = await sha256(req);
   const late = () => new Date("2026-11-01T23:59:00Z");
   await l.accept(req, late);
@@ -131,7 +137,7 @@ test("retries: the same bytes get the same receipt; other bytes for a recorded s
 });
 
 test("a write the bucket refused is not receipted; it is finished first on the next call, with no gap", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const req = rec("request");
   b.failNext();
   const first = await l.accept(req, at(0));
@@ -147,7 +153,7 @@ test("a write the bucket refused is not receipted; it is finished first on the n
 });
 
 test("a crash after the bucket write but before clearing pending: finished without writing twice", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   await l.accept(rec("request"), at(0));
   const stored = b.store.get(keyFor(1, G, "request"))!;
   // Put the pending record back, as if the Durable Object stopped right after the bucket write.
@@ -159,7 +165,7 @@ test("a crash after the bucket write but before clearing pending: finished witho
 });
 
 test("an object it did not write under its next name stops all writes until Ben looks", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   b.store.set(keyFor(1, G, "request"), { body: "planted", sha: "x" });
   const o = await l.accept(rec("request"), at(0));
   assert.equal(o.status, 503);
@@ -169,7 +175,7 @@ test("an object it did not write under its next name stops all writes until Ben 
 });
 
 test("the day's cap: requests reserve their grant's slots, so admitted grants can always finish", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const grants = DAY_CAP / STAGE_SLOTS;
   const reqs: string[] = [];
   for (let i = 0; i < grants; i++) {
@@ -189,7 +195,7 @@ test("the day's cap: requests reserve their grant's slots, so admitted grants ca
 });
 
 test("Codex r1: midnight does not reset the cap -- yesterday's open grants' slots carry over, so no UTC day takes more than the cap", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const eve = () => new Date("2026-11-01T23:59:00Z"), morn = () => new Date("2026-11-02T00:01:00Z");
   const hashes: [string, string][] = [];
   for (let i = 0; i < DAY_CAP / STAGE_SLOTS; i++) {
@@ -208,7 +214,7 @@ test("Codex r1: midnight does not reset the cap -- yesterday's open grants' slot
 });
 
 test("Codex r1: a lifetime storage budget; requests reserve room for their stages; full means refused until Ben decides", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b, 10 * MAX_STORED_BYTES);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b, 10 * MAX_STORED_BYTES);
   assert.equal((await l.accept(rec("request", {}, "grant-b001"), at(0))).status, 201);
   assert.equal((await l.accept(rec("request", {}, "grant-b002"), at(0))).status, 201);
   const full = await l.accept(rec("request", {}, "grant-b003"), at(0));
@@ -218,7 +224,7 @@ test("Codex r1: a lifetime storage budget; requests reserve room for their stage
 });
 
 test("Codex r1: recovery reads the stored bytes; a foreign object with a matching label is still refused", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   b.failNext();
   await l.accept(rec("request"), at(0));
   const p = st.m.get("pending") as { key: string; storedSha: string };
@@ -228,7 +234,7 @@ test("Codex r1: recovery reads the stored bytes; a foreign object with a matchin
 });
 
 test("Codex r1: after a long outage the record takes the time it is stored, and its receipt matches", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const req = rec("request");
   b.failNext();
   assert.equal((await l.accept(req, at(0))).status, 503);
@@ -242,7 +248,7 @@ test("Codex r1: after a long outage the record takes the time it is stored, and 
 });
 
 test("Codex r2: a write held over midnight by an outage is charged to the day it is stored; no day exceeds the cap", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   // A short outage: 23:59:30 to 00:01, under the 5-minute re-stamp threshold (Codex r3).
   const eve = () => new Date("2026-11-01T23:59:30Z"), morn = () => new Date("2026-11-02T00:01:00Z");
   // 100 grants finished before midnight (399 records), the last result held by an outage.
@@ -270,7 +276,7 @@ test("Codex r2: a write held over midnight by an outage is charged to the day it
 });
 
 test("Codex r2: recovery compares the stored object's raw bytes, not its decoded text", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   b.failNext();
   await l.accept(rec("request", { note: "\ufffd" }), at(0));
   const p = st.m.get("pending") as { key: string; stored: string; storedSha: string };
@@ -284,7 +290,7 @@ test("Codex r2: recovery compares the stored object's raw bytes, not its decoded
 });
 
 test("Codex r2: an object planted ahead under the recorder's next number stops the recorder until Ben looks", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   b.store.set("records/v1/000000000001.grant-planted.request.json", { body: "{}" });
   const o = await l.accept(rec("request"), at(0));
   assert.deepEqual([o.status, "why" in o && o.why], [503, "the next record's number is taken by an object the recorder did not write: Ben must look"]);
@@ -292,7 +298,7 @@ test("Codex r2: an object planted ahead under the recorder's next number stops t
 });
 
 test("simultaneous writes are taken one at a time: no shared sequence number, no lost update", async () => {
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const outs = await Promise.all(Array.from({ length: 20 }, (_, i) => l.accept(rec("request", {}, `grant-${String(i).padStart(4, "0")}`), at(0))));
   const seqs = outs.map((o) => ("receipt" in o ? o.receipt.seq : 0)).sort((x, y) => x - y);
   assert.deepEqual(seqs, Array.from({ length: 20 }, (_, i) => i + 1));
@@ -369,7 +375,7 @@ test("edge login: Access's keys unreadable means refused, not let through", asyn
 test("the address: two paths only; the login check runs before the body is read; only the front desk writes", async () => {
   resetCerts();
   const s = await signer();
-  const st = storage(), b = bucket(), l = new Ledger(st, b);
+  const st = storage(), b = bucket(), l = new TestLedger(st, b);
   const stub = { accept: (body: string) => l.accept(body, at(0)), status: () => l.status(NOW) };
   let bodyRead = false;
   const tracked = new ReadableStream({ pull(c) { bodyRead = true; c.enqueue(new TextEncoder().encode(rec("request"))); c.close(); } }, { highWaterMark: 0 });
@@ -427,7 +433,7 @@ test("every stored envelope is version 2 and signed; the key is made once and su
   assert.equal(await sealedOk(l, b, keyFor(1, G, "request")), true);
   const pub = (await l.status(NOW)).public_key;
   // A new Ledger over the same storage (a Durable Object restart) signs with the same key.
-  const again = new Ledger(st, b);
+  const again = new TestLedger(st, b);
   assert.equal((await again.status(NOW)).public_key, pub);
   assert.equal((await again.accept(later("approval"), at(1))).status, 201);
   assert.equal(await sealedOk(l, b, keyFor(2, G, "approval")), true);
@@ -444,7 +450,7 @@ test("T10: a record stored late is signed again over the time it was actually st
 });
 
 test("T11: status shows only the 32-byte public key; nothing in it imports as a private key", async () => {
-  const st = storage(), l = new Ledger(st, bucket());
+  const st = storage(), l = new TestLedger(st, bucket());
   const s = await l.status(NOW); // made on first status, before any record
   assert.equal(unb64(s.public_key).length, 32);
   for (const v of Object.values(s)) {

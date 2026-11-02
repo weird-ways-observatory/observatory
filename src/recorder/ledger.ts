@@ -6,7 +6,9 @@
 // steps leaves the pending record, which the next call finishes first -- so sequence numbers never
 // have gaps. Every envelope is signed (card 6a04908f) with a key made here on first use; the
 // private half lives only in this Durable Object's storage and is never returned or logged.
+// An `approval` is stored only if Ben's pinned passkey signed it for that grant (passkey.ts, card 7190ab0a).
 import { b64, DAY_CAP, GRANT_TTL_MS, keyFor, MAX_STORED_BYTES, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt, type Stage } from "../contract.ts";
+import { approvalCheck, grantHashOf, PASSKEY_PIN, type ApprovalCheck } from "./passkey.ts";
 
 /** The slice of Durable Object storage used here; each put of several keys is one atomic write. */
 export interface Storage {
@@ -21,7 +23,9 @@ interface Open { grant: string; opened: number; left: number }
 // `used`: today's slots (records written plus reserved, including reservations carried over from
 // grants opened yesterday). `bytes`: every stored envelope's size, for the lifetime budget.
 interface Meta { seq: number; day: string; used: number; bytes: number; open: Open[] }
-interface Grant { job: string; request: string; opened: number; stages: Partial<Record<Stage, Receipt>> }
+// `grant_hash`: the front desk's hash of the grant, kept only if it matches the hash worked out here from
+// the request's own fields (passkey.ts grantHashOf); Ben's passkey answer must carry it.
+interface Grant { job: string; request: string; opened: number; grant_hash?: string; stages: Partial<Record<Stage, Receipt>> }
 interface Pending { key: string; stored: string; storedSha: string; receipt: Receipt; day: string } // `day`: the UTC day its slot was charged to
 interface Keys { priv: string; pub: string } // base64 PKCS#8 and raw Ed25519 public key
 
@@ -46,10 +50,12 @@ export class Ledger {
   private storage: Storage;
   private bucket: Bucket;
   private budget: number;
-  constructor(storage: Storage, bucket: Bucket, budget = STORE_BUDGET_BYTES) {
+  private approvals: ApprovalCheck;
+  constructor(storage: Storage, bucket: Bucket, budget = STORE_BUDGET_BYTES, approvals = approvalCheck(PASSKEY_PIN)) {
     this.storage = storage;
     this.bucket = bucket;
     this.budget = budget;
+    this.approvals = approvals;
   }
 
   /**
@@ -123,13 +129,17 @@ export class Ledger {
       if (meta.used + STAGE_SLOTS > DAY_CAP) return { status: 429, why: `today's ${DAY_CAP} record slots are taken` };
       if (meta.bytes + reservedBytes(meta) + STAGE_SLOTS * MAX_STORED_BYTES > this.budget) return { status: 429, why: "the recorder's storage budget is full: Ben must decide" };
       meta = { ...meta, used: meta.used + STAGE_SLOTS, open: [...meta.open, { grant: r.grant, opened: t, left: STAGE_SLOTS - 1 }] };
-      next = { job: r.job, request: sha, opened: t, stages: {} };
+      next = { job: r.job, request: sha, opened: t, ...(await grantHashOf(r).then((h) => (h && r.grant_hash === h ? { grant_hash: h } : {}))), stages: {} };
     } else {
       if (!grant) return { status: 409, why: "no request is recorded for this grant" };
       if (t - grant.opened > GRANT_TTL_MS) return { status: 410, why: "this grant's request is over 24 hours old" };
       if (r.request !== grant.request) return { status: 409, why: "the request hash does not match the recorded request" };
       if (r.job !== grant.job) return { status: 409, why: "the job does not match the recorded request" };
       if (r.stage === "result" && !grant.stages.approval) return { status: 409, why: "no approval is recorded for this grant" };
+      if (r.stage === "approval") {
+        const refused = await this.approvals(r, grant.grant_hash);
+        if (refused) return { status: 409, why: refused };
+      }
       // Its slot was reserved when the request was taken (and carried into today if need be).
       meta = { ...meta, open: meta.open.map((o) => (o.grant === r.grant ? { ...o, left: Math.max(0, o.left - 1) } : o)) };
       next = grant;
@@ -151,6 +161,28 @@ export class Ledger {
     return { status: 201, receipt: final };
   }
 
+  /**
+   * Withdraws a pending approval whose passkey answer fails the check: its number, bytes and grant
+   * stage are given back, so the next record takes the number and no gap appears. No receipt has gone
+   * out for it (receipts follow storage), so the desk has already stopped that grant. Returns true if
+   * withdrawn. A crash after the first write is safe: the number is only given back once.
+   */
+  async #withdrawUnverified(p: Pending): Promise<boolean> {
+    const checked = validate((JSON.parse(p.stored) as Envelope).body);
+    const g = (await this.storage.get<Grant>(`g:${p.receipt.grant}`))!;
+    if (checked.ok && !(await this.approvals(checked.record, g.grant_hash))) return false;
+    const m = (await this.storage.get<Meta>("meta"))!;
+    if (m.seq === p.receipt.seq) {
+      const { approval: _, ...stages } = g.stages;
+      await this.storage.put({
+        meta: { ...m, seq: m.seq - 1, bytes: Math.max(0, m.bytes - new TextEncoder().encode(p.stored).length), open: m.open.map((o) => (o.grant === p.receipt.grant ? { ...o, left: o.left + 1 } : o)) },
+        [`g:${p.receipt.grant}`]: { ...g, stages },
+      });
+    }
+    await this.storage.delete("pending");
+    return true;
+  }
+
   /** Stores the pending record, if any. Returns why it could not, or undefined once it is stored. */
   async #finishPending(now: Date): Promise<string | undefined> {
     let p = await this.storage.get<Pending>("pending");
@@ -162,6 +194,9 @@ export class Ledger {
       const here = (await this.bucket.list({ prefix, limit: 10 })).objects.map((o) => o.key);
       if (here.some((k) => k !== p!.key)) return "the next record's number is taken by an object the recorder did not write: Ben must look";
       const there = here.includes(p.key) ? await this.bucket.get(p.key) : null;
+      // An approval not yet in the bucket is checked again before it is stored: one queued by a
+      // recorder from before the passkey check (or before a new pin) must not slip through (Codex r1 #1).
+      if (!there && p.receipt.stage === "approval" && (await this.#withdrawUnverified(p))) return undefined;
       if (there) {
         // Stored before a crash: fine only if its raw bytes are ours.
         if ((await sha256(new Uint8Array(await there.arrayBuffer()))) !== p.storedSha) return "the next record's name is taken by an object the recorder did not write: Ben must look";

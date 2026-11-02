@@ -40,9 +40,17 @@ it cannot detect a secret under an innocent name, so the front desk redacts (pha
 | 503 | its edge-login settings are missing; Access's keys unreadable; a write pending that the bucket has not taken yet (retry); or anything it did not write already sitting under its next record number (stops until Ben looks) |
 | 413 | over 8192 bytes, counted as the body arrives |
 | 400 | outside the record format above (a fixed reason, never the writer's own text) |
-| 409 | approval or verdict with no recorded request; result with no recorded approval; wrong request hash or job; this stage already recorded with other content |
+| 409 | approval or verdict with no recorded request; result with no recorded approval; wrong request hash or job; this stage already recorded with other content; an approval whose passkey answer fails the check below |
 | 410 | the grant's request is over 24 hours old |
 | 429 | today's 400 slots (UTC day) are taken, or the lifetime storage budget (1 GiB of stored envelopes) is full. A request takes 4 slots and reserves room in the budget for its grant's other three stages, so admitted grants can always finish. A new day starts with the slots still reserved by grants opened the day before, never at zero, so no UTC day stores more than 400 records; a write held over midnight by an outage, however briefly, is charged to the day it is finally stored and carries that day's time. A full budget refuses every request until Ben decides. |
+
+**Approvals are checked against Ben's passkey (card 7190ab0a).** An `approval` is stored only if
+its `assertion` (`passkey_id`, `authenticator_data`, `client_data_json`, `signature`, base64url) was
+signed by the passkey pinned in `src/recorder/passkey.ts` (`PASSKEY_PIN`, changed only by a PR Ben
+merges): a `webauthn.get` answer from the front desk's site (origin and site name compared as SHA-256
+hashes), with Face ID (user present and verified flags), whose challenge is 16 random bytes followed
+by the `grant_hash` the grant's request record carried. A request without `grant_hash` can never be
+approved. With no pin, every approval is refused. Approvals stored before the pin were not checked.
 
 The same bytes sent again for a recorded stage get the same receipt (200), so a lost answer is
 safe to retry. A new record gets 201 and its receipt:
