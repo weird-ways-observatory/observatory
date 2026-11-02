@@ -25,10 +25,10 @@ function bucket(fail?: "get" | "put") {
   };
 }
 
-// GitHub answers `main` (a sha, or a status number); Pushover answers `pushover`.
+// GitHub answers `main` (a sha, or a status number); Pushover answers `pushover`; healthchecks answers `hc`.
 function wire(opts: { main?: string | number; pushover?: number } = {}) {
   const calls: { host: string; path: string; body: string }[] = [];
-  const state = { main: opts.main ?? LIVE };
+  const state = { main: opts.main ?? LIVE, pushover: opts.pushover ?? 200, hc: 200 };
   const fetch = async (req: Request) => {
     const url = new URL(req.url);
     calls.push({ host: url.hostname, path: url.pathname, body: await req.text() });
@@ -36,8 +36,8 @@ function wire(opts: { main?: string | number; pushover?: number } = {}) {
       if (typeof state.main === "number") return new Response("{}", { status: state.main, headers: { "x-ratelimit-remaining": "0" } });
       return new Response(state.main);
     }
-    if (url.hostname === "api.pushover.net") return new Response("{}", { status: opts.pushover ?? 200 });
-    return new Response("OK");
+    if (url.hostname === "api.pushover.net") return new Response("{}", { status: state.pushover });
+    return new Response("OK", { status: state.hc });
   };
   const hc = () => calls.filter((c) => c.host === "hc-fresh.example").map((c) => c.path);
   const pushes = () => calls.filter((c) => c.host === "api.pushover.net").length;
@@ -96,7 +96,7 @@ test("main ahead: waiting for 6 hours, then one alert, /fail every hour, cleared
   w.state.main = LIVE;
   assert.equal((await runFresh(e, w.fetch, at(8))).fresh, "healthy");
   assert.equal(w.hc().at(-1), "/hour");
-  assert.deepEqual(JSON.parse(copy.store.get(STATE_KEY)!), {});
+  assert.deepEqual(JSON.parse(copy.store.get(STATE_KEY)!), { lightUp: true });
 });
 
 test("GitHub unreadable (rate limit): waiting under 3 hours, then unverified -- never healthy", async () => {
@@ -134,6 +134,47 @@ test("the alert's fallback goes to this job's own check, never the backup check"
   assert.equal(w.hc().at(-1), "/hour/fail");
   assert.equal(w.hc().filter((p) => p === "/hour/fail").length, 1, "the fallback /fail stands in for the hourly /fail");
   assert.ok(!w.calls.some((c) => c.host === "hc-backup.example"));
+});
+
+// Card 4070b32f: healthchecks emails only when the light changes, so its /fail tells Ben only when
+// the light was confirmed up before. Anything else is not told and is tried again next hour.
+test("Pushover down while the light is already red: the new bad verdict is retried until Pushover takes it", async () => {
+  const e = env(), w = wire({ main: AHEAD });
+  for (let h = 0; h <= 6; h++) await runFresh(e, w.fetch, at(h));
+  assert.equal(w.pushes(), 1, "not-live told through Pushover");
+
+  w.state.pushover = 500;
+  e.DEPLOYED_SHA = ""; // straight to a different bad verdict, no green hour between
+  for (let h = 7; h <= 9; h++) assert.equal((await runFresh(e, w.fetch, at(h))).fresh, "unverified");
+  assert.equal(w.pushes(), 4, "unverified tried at hours 7, 8, 9: each /fail changed nothing");
+
+  w.state.pushover = 200;
+  await runFresh(e, w.fetch, at(10));
+  await runFresh(e, w.fetch, at(11));
+  assert.equal(w.pushes(), 5, "taken at hour 10, then no more");
+});
+
+test("Pushover down at the first bad hour after a confirmed up: the fallback /fail is a real change and counts as told", async () => {
+  const e = env(), w = wire({ main: AHEAD, pushover: 500 });
+  for (let h = 0; h <= 8; h++) await runFresh(e, w.fetch, at(h));
+  assert.equal(w.pushes(), 1, "told once by the fallback at hour 6");
+});
+
+test("an up ping healthchecks did not confirm does not make the next fallback count", async () => {
+  const e = env(), w = wire({ main: AHEAD, pushover: 500 });
+  w.state.hc = 503;
+  for (let h = 0; h < 6; h++) await runFresh(e, w.fetch, at(h));
+  w.state.hc = 200;
+  for (let h = 6; h <= 7; h++) await runFresh(e, w.fetch, at(h));
+  assert.equal(w.pushes(), 2, "the light was never confirmed up, so hour 6 is tried again at hour 7");
+});
+
+test("neither channel takes the alert: it is tried again next hour", async () => {
+  const e = env(), w = wire({ main: AHEAD, pushover: 500 });
+  for (let h = 0; h < 6; h++) await runFresh(e, w.fetch, at(h));
+  w.state.hc = 503;
+  for (let h = 6; h <= 7; h++) await runFresh(e, w.fetch, at(h));
+  assert.equal(w.pushes(), 2);
 });
 
 test("PING_URL_FRESH not set yet: log only -- no alert, no ping, nothing claims healthy", async () => {
