@@ -4,7 +4,7 @@ import worker from "../src/index.ts";
 import { FRESH_CRON } from "../src/fresh.ts";
 import { b64, DAY_CAP, keyFor, MAX_STORED_BYTES, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
 import { Ledger, type Storage } from "../src/recorder/ledger.ts";
-import { fp, MAX_COPIES, MAX_QUEUED, MIN_LOCK_SECONDS, PAGE, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
+import { fp, MAX_COPIES, MAX_QUEUED, MIN_LOCK_SECONDS, PAGE, PIN, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
 /** A finding line for a grant, as alerts show it: the fingerprint, never the id. */
 const says = async (grant: string, rest: string, n = "\\d+") => new RegExp(`grant ${await fp(grant)} \\(record ${n}\\)${rest}`);
 
@@ -102,12 +102,12 @@ const env = (records: B | undefined, over: Partial<Omit<RecordsEnv, "COPY">> = {
   ...over,
 });
 const ids = async (e: RecordsEnv & { COPY: B }) => JSON.parse(e.COPY.store.get(STATE_KEY)!.body).alerted as string[];
-const reasonOf = async (b: B, now = NOW) => (await runRecords(env(b), wire().fetch, now)).reason;
+const reasonOf = async (b: B, now = NOW) => (await runRecords(env(b), wire().fetch, now, null)).reason;
 
 test("grants recorded through the recorder are healthy, and the run pings its own check", async () => {
   const b = bucket(), w = wire();
   await viaRecorder(b, [G, "grant-0002"]);
-  const r = await runRecords(env(b), w.fetch, NOW);
+  const r = await runRecords(env(b), w.fetch, NOW, null);
   assert.deepEqual([r.records, r.checked, r.seq], ["healthy", 8, 8]);
   assert.deepEqual(w.hc(), ["/rec"]);
   assert.equal(w.pushes().length, 0);
@@ -119,14 +119,14 @@ test("the bookmark: each hour reads only what is new, and a grant across midnigh
   const t1 = new Date("2026-11-01T23:59:00Z");
   b.setClock(t1);
   await l.accept(req, () => t1);
-  assert.equal((await runRecords(e, wire().fetch, new Date("2026-11-02T00:30:00Z"))).checked, 1);
+  assert.equal((await runRecords(e, wire().fetch, new Date("2026-11-02T00:30:00Z"), null)).checked, 1);
   for (const [s, t] of [["approval", "2026-11-02T00:31:00Z"], ["result", "2026-11-02T00:32:00Z"]] as const) {
     b.setClock(new Date(t));
     await l.accept(rec(s, { request: h }), () => new Date(t));
   }
-  const two = await runRecords(e, wire().fetch, new Date("2026-11-03T01:30:00Z"));
+  const two = await runRecords(e, wire().fetch, new Date("2026-11-03T01:30:00Z"), null);
   assert.deepEqual([two.records, two.checked, two.seq], ["healthy", 2, 3]);
-  assert.equal((await runRecords(e, wire().fetch, new Date("2026-11-03T02:30:00Z"))).checked, 0);
+  assert.equal((await runRecords(e, wire().fetch, new Date("2026-11-03T02:30:00Z"), null)).checked, 0);
 });
 
 test("order: result with no request is 'ran unrecorded'; no approval; approval or verdict first", async () => {
@@ -176,13 +176,13 @@ test("security review: a planted name past every record never parks the bookmark
   const req = rec("request"), h = await sha256(req);
   b.setClock(at(-20));
   await l.accept(req, () => at(-20));
-  const first = await runRecords(e, wire().fetch, NOW);
+  const first = await runRecords(e, wire().fetch, NOW, null);
   assert.equal(first.checked, 1);
   // The stray sorts after the jump, so this hour stops before it; the jump alerts and the daily count covers both.
   assert.match(first.reason, /record numbers jumped from 1 to 999999999999: number 2 is missing/);
   // The next real records, numbered 2 and 3, are read on the next hour despite the planted names.
   for (const [s, m] of [["approval", 1], ["result", 2]] as const) { b.setClock(at(m)); await l.accept(rec(s, { request: h }), () => at(m)); }
-  const second = await runRecords(e, wire().fetch, at(60));
+  const second = await runRecords(e, wire().fetch, at(60), null);
   assert.deepEqual([second.checked, second.seq], [2, 3]);
   assert.match(second.reason, /jumped from 3 to 999999999999/); // still reported while it stays
 });
@@ -193,12 +193,12 @@ test("security review: a stray name that sorts after every record is reported ea
   const req = rec("request"), h = await sha256(req);
   b.setClock(at(-20));
   await l.accept(req, () => at(-20));
-  const first = await runRecords(e, wire().fetch, NOW);
+  const first = await runRecords(e, wire().fetch, NOW, null);
   assert.equal(first.checked, 1);
   assert.match(first.reason, /something outside the record format/);
   b.setClock(at(1));
   await l.accept(rec("approval", { request: h }), () => at(1));
-  const second = await runRecords(e, wire().fetch, at(60));
+  const second = await runRecords(e, wire().fetch, at(60), null);
   assert.deepEqual([second.checked, second.seq], [1, 2]);
   assert.match(second.reason, /something outside the record format/);
 });
@@ -210,7 +210,7 @@ test("before a pin: a shared number is a finding, none of its copies counts, and
   b.setClock(at(-9)); await l.accept(rec("approval", { request: h }), () => at(-9)); // the recorder's number 2
   await planted(b, 2, "grant-plant-a", "request", at(-8));
   b.setClock(at(-7)); await l.accept(rec("verdict", { request: h }), () => at(-7)); // number 3
-  const r = await runRecords(e, wire().fetch, NOW, undefined);
+  const r = await runRecords(e, wire().fetch, NOW, null);
   assert.deepEqual([r.records, r.seq, r.checked], ["findings", 3, 3]);
   assert.match(r.reason, /2 objects share record number 2, from before records were signed: none counts/);
   assert.equal(Object.values(JSON.parse(e.COPY.store.get(STATE_KEY)!.body).days as Record<string, number>).reduce((x, y) => x + y, 0), 2);
@@ -349,7 +349,7 @@ test("T9: a pin that cannot be read is unverified, never a crash, and reads noth
 test("security review: a re-check that stops short never marks unchecked numbers as signed, and keeps its findings", async () => {
   const b = bucket(), e = env(b), real = new Ledger(memory(), b);
   for (let n = 1; n <= 3; n++) await planted(b, n, `grant-pre${String(n).padStart(4, "0")}`, "request", at(-9)); // read unsigned
-  assert.equal((await runRecords(e, wire().fetch, NOW, undefined)).seq, 3);
+  assert.equal((await runRecords(e, wire().fetch, NOW, null)).seq, 3);
   b.unreadable.add(keyFor(2, "grant-pre0002", "request"));
   b.add("records/v1/000000000001.junk", "{}", at(-8));
   const pin = await pinOf(real);
@@ -377,7 +377,7 @@ test("Codex r2 #2: a re-check longer than one hour's budget picks up where it st
     b.add(keyFor(n, g, "request"), JSON.stringify({ ...x, sig: b64(await crypto.subtle.sign("Ed25519", pair.privateKey, sealed(x))) }), t0);
   }
   await planted(b, PAGE + 1, "grant-unsig", "request", t0); // the last one, unsigned
-  for (const h of [0, 1]) await runRecords(e, wire().fetch, new Date(`2026-11-01T1${h}:30:00Z`), undefined); // read through unsigned
+  for (const h of [0, 1]) await runRecords(e, wire().fetch, new Date(`2026-11-01T1${h}:30:00Z`), null); // read through unsigned
   const one = await runRecords(e, wire().fetch, new Date("2026-11-01T12:30:00Z"), pin);
   assert.equal(one.records, "unverified");
   assert.equal(JSON.parse(e.COPY.store.get(STATE_KEY)!.body).sealed.to, PAGE);
@@ -395,7 +395,7 @@ test("security review: two signed copies found by the re-check stop it there, un
     const x: Envelope = { v: 2, seq: 1, grant: g, stage: "request", recorded_at: at(-5).toISOString(), sha256: await sha256(body), body };
     b.add(keyFor(1, g, "request"), JSON.stringify({ ...x, sig: b64(await crypto.subtle.sign("Ed25519", pair.privateKey, sealed(x))) }), at(-5));
   }
-  await runRecords(e, wire().fetch, NOW, undefined); // read unsigned past number 1
+  await runRecords(e, wire().fetch, NOW, null); // read unsigned past number 1
   const r = await runRecords(e, wire().fetch, at(60), pin);
   assert.equal(r.records, "unverified");
   assert.equal(JSON.parse(e.COPY.store.get(STATE_KEY)!.body).sealed.to, 0);
@@ -418,7 +418,7 @@ test("Codex r1 #2: when the pin arrives after records were read unsigned, each i
   const b = bucket(), e = env(b), real = new Ledger(memory(), b);
   b.setClock(at(-10)); await real.accept(rec("request"), () => at(-10)); // number 1, signed
   await planted(b, 2, "grant-plant-u", "request", at(-9)); // number 2, unsigned, read before any pin
-  assert.equal((await runRecords(e, wire().fetch, NOW, undefined)).seq, 2);
+  assert.equal((await runRecords(e, wire().fetch, NOW, null)).seq, 2);
   const r = await runRecords(e, wire().fetch, at(60), await pinOf(real));
   assert.equal(r.seq, 2);
   assert.match(r.reason, /record 2 was read before the key was pinned and has no copy the recorder signed/);
@@ -435,7 +435,7 @@ test("security review: junk names under a number cannot hide its real record", a
   const b = bucket(), l = new Ledger(memory(), b);
   b.setClock(at(-10)); await l.accept(rec("request"), () => at(-10));
   for (const j of ["a", "aa", "aaa", "b"]) b.add(`records/v1/000000000001.${j}`, "{}", at(-9)); // junk sorting before it
-  for (const pin of [undefined, await pinOf(l)]) {
+  for (const pin of [null, await pinOf(l)]) {
     const r = await runRecords(env(b), wire().fetch, NOW, pin);
     assert.deepEqual([r.checked, r.seq], [1, 1]);
     assert.match(r.reason, /something outside the record format/);
@@ -445,7 +445,7 @@ test("security review: junk names under a number cannot hide its real record", a
 test("Codex r1 B8: grant ids never appear in alert text, only their fingerprints", async () => {
   const b = bucket(), w = wire();
   await planted(b, 1, "password_SENSITIVE_MARKER", "result", at(-1));
-  const r = await runRecords(env(b), w.fetch, NOW);
+  const r = await runRecords(env(b), w.fetch, NOW, null);
   assert.ok(!r.reason.includes("SENSITIVE_MARKER"), r.reason);
   assert.ok(!w.pushes().some((c) => c.body.includes("SENSITIVE_MARKER")));
   assert.match(r.reason, await says("password_SENSITIVE_MARKER", " has a result with no request record"));
@@ -460,7 +460,7 @@ test("security review: a flood of junk names right after the bookmark cannot sta
   b.setClock(at(-10)); await l.accept(req, () => at(-10));
   for (let i = 0; i < PAGE + 100; i++) b.add(`records/v1/000000000001~junk${String(i).padStart(4, "0")}`, "{}", at(-9));
   b.setClock(at(-8)); await l.accept(rec("approval", { request: h }), () => at(-8));
-  const r = await runRecords(e, wire().fetch, NOW);
+  const r = await runRecords(e, wire().fetch, NOW, null);
   assert.deepEqual([r.checked, r.seq], [2, 2]);
 });
 
@@ -468,7 +468,7 @@ test("security review: a flood of junk names right after the bookmark cannot sta
 test("security review: grant ids that are built-in object names cannot crash or corrupt the checker", async () => {
   const b = bucket();
   await viaRecorder(b, ["constructor", "hasOwnProperty"]);
-  const r = await runRecords(env(b), wire().fetch, NOW);
+  const r = await runRecords(env(b), wire().fetch, NOW, null);
   assert.deepEqual([r.records, r.checked], ["healthy", 8]);
 });
 
@@ -519,21 +519,21 @@ test("an oversized object is flagged by size and never downloaded", async () => 
 test("r1 #6: work per hour is bounded; a flood beyond a page is flagged and read on later hours", async () => {
   const b = bucket(), e = env(b);
   for (let i = 1; i <= PAGE + 3; i++) await planted(b, i, `grant-${String(i).padStart(5, "0")}`, "request", at(-1));
-  const first = await runRecords(e, wire().fetch, NOW);
+  const first = await runRecords(e, wire().fetch, NOW, null);
   assert.equal(first.checked, PAGE);
   assert.match(first.reason, new RegExp(`${PAGE} new records in an hour`));
   assert.match(first.reason, new RegExp(`${PAGE} records stored on 2026-11-01, over the cap of ${DAY_CAP}`));
-  assert.equal((await runRecords(e, wire().fetch, at(60))).checked, 3);
+  assert.equal((await runRecords(e, wire().fetch, at(60), null)).checked, 3);
 });
 
 test("a record that cannot be read stops the run there, unverified, and is read again next hour", async () => {
   const b = bucket(), e = env(b);
   await viaRecorder(b);
   b.unreadable.add(keyFor(3, G, "approval"));
-  const r = await runRecords(e, wire().fetch, NOW);
+  const r = await runRecords(e, wire().fetch, NOW, null);
   assert.deepEqual([r.records, r.checked], ["unverified", 2]);
   b.unreadable.clear();
-  const again = await runRecords(e, wire().fetch, at(60));
+  const again = await runRecords(e, wire().fetch, at(60), null);
   assert.deepEqual([again.records, again.checked], ["healthy", 2]);
 });
 
@@ -541,17 +541,17 @@ test("a finding alerts once, stays quiet while it lasts, and alerts again if it 
   const b = bucket(), e = env(b);
   b.add("stray", "{}", at(-1));
   const w1 = wire();
-  await runRecords(e, w1.fetch, NOW);
+  await runRecords(e, w1.fetch, NOW, null);
   assert.equal(w1.pushes().length, 1);
   const w2 = wire();
-  await runRecords(e, w2.fetch, at(60));
+  await runRecords(e, w2.fetch, at(60), null);
   assert.equal(w2.pushes().length, 0);
   assert.deepEqual(w2.hc(), ["/rec/fail"]);
   b.store.delete("stray");
-  await runRecords(e, wire().fetch, at(120));
+  await runRecords(e, wire().fetch, at(120), null);
   b.add("stray", "{}", at(121));
   const w4 = wire();
-  await runRecords(e, w4.fetch, at(180));
+  await runRecords(e, w4.fetch, at(180), null);
   assert.equal(w4.pushes().length, 1);
 });
 
@@ -560,7 +560,7 @@ test("r1 #4: an alert holds what fits, worst first; only what was sent counts as
   for (let i = 1; i <= 30; i++) await planted(b, i, `grant-${String(i).padStart(4, "0")}`, "result", at(-1));
   b.add("stray", "{}", at(-1));
   const w = wire();
-  await runRecords(e, w.fetch, NOW);
+  await runRecords(e, w.fetch, NOW, null);
   const msg = new URLSearchParams(w.pushes()[0].body).get("message")!;
   assert.ok(msg.length <= 1024);
   assert.match(msg.split("\n")[0], /ran unrecorded/); // worst first; the stray waits
@@ -569,7 +569,7 @@ test("r1 #4: an alert holds what fits, worst first; only what was sent counts as
   // The bookmark has passed those records, yet the untold ones still arrive in the next hours.
   const heard = new Set(told);
   for (let h = 1; h <= 10 && heard.size < 31; h++) {
-    await runRecords(e, wire().fetch, at(60 * h));
+    await runRecords(e, wire().fetch, at(60 * h), null);
     for (const id of await ids(e)) heard.add(id);
   }
   assert.equal(heard.size, 31);
@@ -579,11 +579,11 @@ test("r1 #5: an alert no channel took is not told; it is tried again next hour",
   const b = bucket(), e = env(b);
   await planted(b, 1, G, "result", at(-1));
   const down = wire(undefined, 503, 503);
-  await runRecords(e, down.fetch, NOW);
+  await runRecords(e, down.fetch, NOW, null);
   assert.equal(down.pushes().length, 1);
   assert.deepEqual(await ids(e), []);
   const up = wire();
-  await runRecords(e, up.fetch, at(60));
+  await runRecords(e, up.fetch, at(60), null);
   assert.equal(up.pushes().length, 1);
   assert.match(new URLSearchParams(up.pushes()[0].body).get("message")!, /ran unrecorded/);
 });
@@ -591,7 +591,7 @@ test("r1 #5: an alert no channel took is not told; it is tried again next hour",
 test("undelivered findings carried hour to hour are bounded, with a line saying more were dropped", async () => {
   const b = bucket(), e = env(b, { PING_URL_RECORDS: undefined });
   for (let i = 1; i <= MAX_QUEUED + 20; i++) await planted(b, i, `grant-${String(i).padStart(4, "0")}`, "result", at(-1));
-  await runRecords(e, wire().fetch, NOW);
+  await runRecords(e, wire().fetch, NOW, null);
   const queued = JSON.parse(e.COPY.store.get(STATE_KEY)!.body).queued as { id: string }[];
   assert.equal(queued.length, MAX_QUEUED);
   assert.equal(queued.at(-1)!.id, "queued:more");
@@ -600,17 +600,17 @@ test("undelivered findings carried hour to hour are bounded, with a line saying 
 test("without its own check it only logs: no alert, nothing claims healthy", async () => {
   const b = bucket(), w = wire();
   b.add("stray", "{}", at(-1));
-  const r = await runRecords(env(b, { PING_URL_RECORDS: undefined }), w.fetch, NOW);
+  const r = await runRecords(env(b, { PING_URL_RECORDS: undefined }), w.fetch, NOW, null);
   assert.equal(r.setup, "PING_URL_RECORDS not set: log only");
   assert.equal(w.calls.filter((c) => c.host !== "api.cloudflare.com").length, 0);
 });
 
 test("no binding, or a list that fails, is unverified, never healthy", async () => {
-  assert.equal((await runRecords(env(undefined), wire().fetch, NOW)).records, "unverified");
+  assert.equal((await runRecords(env(undefined), wire().fetch, NOW, null)).records, "unverified");
   const b = bucket();
   b.failList();
   const w = wire();
-  const r = await runRecords(env(b), w.fetch, NOW);
+  const r = await runRecords(env(b), w.fetch, NOW, null);
   assert.deepEqual([r.records, r.reason], ["unverified", "the records could not be listed"]);
   assert.equal(w.pushes().length, 1);
 });
@@ -618,12 +618,12 @@ test("no binding, or a list that fails, is unverified, never healthy", async () 
 test("the records lock is read and a short one is a finding; no key yet claims nothing", async () => {
   const b = bucket();
   const lockEnv = { LOCK_READ_TOKEN: "t".repeat(40), LOCK_ACCOUNT_ID: "f".repeat(32) };
-  const short = await runRecords(env(b, lockEnv), wire([{ id: "r", enabled: true, prefix: "records/", condition: { type: "Age", maxAgeSeconds: 86_400 } }]).fetch, NOW);
+  const short = await runRecords(env(b, lockEnv), wire([{ id: "r", enabled: true, prefix: "records/", condition: { type: "Age", maxAgeSeconds: 86_400 } }]).fetch, NOW, null);
   assert.equal(short.lock, "short");
-  const good = await runRecords(env(b, lockEnv), wire([{ id: "r", enabled: true, prefix: "records/", condition: { type: "Age", maxAgeSeconds: MIN_LOCK_SECONDS } }]).fetch, NOW);
+  const good = await runRecords(env(b, lockEnv), wire([{ id: "r", enabled: true, prefix: "records/", condition: { type: "Age", maxAgeSeconds: MIN_LOCK_SECONDS } }]).fetch, NOW, null);
   assert.equal(good.lock, "ok");
   // No lock key yet: never healthy, a standing finding instead.
-  const none = await runRecords(env(b, { LOCK_READ_TOKEN: undefined, LOCK_ACCOUNT_ID: undefined }), wire().fetch, NOW);
+  const none = await runRecords(env(b, { LOCK_READ_TOKEN: undefined, LOCK_ACCOUNT_ID: undefined }), wire().fetch, NOW, null);
   assert.deepEqual([none.lock, none.records], ["not set up", "findings"]);
   assert.match(none.reason, /records lock not checked: LOCK_READ_TOKEN is not set yet/);
 });
@@ -631,15 +631,15 @@ test("the records lock is read and a short one is a finding; no key yet claims n
 test("once a day the bucket is counted: an object written around the recorder below the bookmark is caught", async () => {
   const b = bucket(), e = env(b);
   await viaRecorder(b);
-  await runRecords(e, wire().fetch, NOW);
+  await runRecords(e, wire().fetch, NOW, null);
   // Inserted under a name that sorts before the bookmark: the hourly read never sees it.
   await planted(b, 2, "grant-aaaa", "request", at(5));
-  assert.equal((await runRecords(e, wire().fetch, at(60))).records, "healthy");
+  assert.equal((await runRecords(e, wire().fetch, at(60), null)).records, "healthy");
   const sweep = new Date("2026-11-02T04:30:00Z");
   assert.equal(sweep.getUTCHours(), SWEEP_HOUR);
-  assert.match((await runRecords(e, wire().fetch, sweep)).reason, /the bucket holds 5 records but the recorder numbered 4: something wrote around the recorder/);
+  assert.match((await runRecords(e, wire().fetch, sweep, null)).reason, /the bucket holds 5 records but the recorder numbered 4: something wrote around the recorder/);
   // Carried through the following hours until the next sweep.
-  assert.match((await runRecords(e, wire().fetch, new Date("2026-11-02T05:30:00Z"))).reason, /something wrote around the recorder/);
+  assert.match((await runRecords(e, wire().fetch, new Date("2026-11-02T05:30:00Z"), null)).reason, /something wrote around the recorder/);
 });
 
 test("the hourly cron runs the records check as its own job", async () => {
@@ -655,4 +655,10 @@ test("the hourly cron runs the records check as its own job", async () => {
   }
   assert.equal(jobs.length, 2);
   assert.ok(w.calls.some((c) => c.host === "hc-records.example"));
+});
+
+test("the pinned recorder key imports as an Ed25519 public key, and signing starts at record 1", async () => {
+  assert.ok(PIN);
+  assert.equal(PIN.from, 1);
+  await crypto.subtle.importKey("raw", Uint8Array.from(atob(PIN.key), (c) => c.charCodeAt(0)), "Ed25519", false, ["verify"]);
 });
