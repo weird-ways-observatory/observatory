@@ -60,7 +60,7 @@ const JOB = "test.echo";
 /** A recorded request for `grant` shaped like the desk's, its grant hash (or `claim` instead), and its sha. */
 async function requested(l: Ledger, grant: string, claim?: string | null) {
   const fields = { v: 1 as const, grant, stage: "request" as const, job: JOB, params: { word: "hi" }, requester: "c-box agent", reason: "test", created_at: 1, expires_at: 1793000000000 };
-  const grantHash = await grantHashOf(fields);
+  const grantHash = (await grantHashOf(fields))!;
   const body = JSON.stringify({ ...fields, ...(claim === null ? {} : { grant_hash: claim ?? grantHash }) });
   assert.equal((await l.accept(body, NOW)).status, 201);
   return { grantHash, request: await sha256(body) };
@@ -143,6 +143,14 @@ test("a request without the desk's grant hash, or with one that is not its own: 
   const A = await requested(s.l, "grant-ffff2");
   const B = await requested(s.l, "grant-ffff3", A.grantHash);
   await refusedWith(s, approval("grant-ffff3", B.request, await s.key.answer(A.grantHash)), "the request's grant hash is missing or wrong");
+});
+
+test("grant hash: only the desk's shapes get one -- odd numbers, non-text params or a missing requester get none", async () => {
+  const base = { v: 1 as const, grant: "grant-odd-0001", stage: "request" as const, job: "test.echo", params: { word: "hi" }, requester: "c-box agent", expires_at: 1793000000000 };
+  assert.match((await grantHashOf(base))!, /^[0-9a-f]{64}$/);
+  for (const odd of [{ expires_at: JSON.parse("1e400") }, { expires_at: null }, { expires_at: -0 }, { expires_at: 1.5 }, { params: { n: 1 } }, { params: ["hi"] }, { params: undefined }, { requester: undefined }]) {
+    assert.equal(await grantHashOf({ ...base, ...odd }), undefined, JSON.stringify(odd));
+  }
 });
 
 test("grant hash: the same bytes as the front desk's grantHash() (vector computed by front-desk src/desk.ts)", async () => {

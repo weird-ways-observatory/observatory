@@ -129,7 +129,7 @@ export class Ledger {
       if (meta.used + STAGE_SLOTS > DAY_CAP) return { status: 429, why: `today's ${DAY_CAP} record slots are taken` };
       if (meta.bytes + reservedBytes(meta) + STAGE_SLOTS * MAX_STORED_BYTES > this.budget) return { status: 429, why: "the recorder's storage budget is full: Ben must decide" };
       meta = { ...meta, used: meta.used + STAGE_SLOTS, open: [...meta.open, { grant: r.grant, opened: t, left: STAGE_SLOTS - 1 }] };
-      next = { job: r.job, request: sha, opened: t, ...(r.grant_hash === (await grantHashOf(r)) ? { grant_hash: r.grant_hash } : {}), stages: {} };
+      next = { job: r.job, request: sha, opened: t, ...(await grantHashOf(r).then((h) => (h && r.grant_hash === h ? { grant_hash: h } : {}))), stages: {} };
     } else {
       if (!grant) return { status: 409, why: "no request is recorded for this grant" };
       if (t - grant.opened > GRANT_TTL_MS) return { status: 410, why: "this grant's request is over 24 hours old" };

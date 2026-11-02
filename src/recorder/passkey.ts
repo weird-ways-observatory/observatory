@@ -28,7 +28,12 @@ function canonical(v: unknown): string {
  * does. It covers the grant id, so it belongs to one grant only: a request cannot borrow another
  * grant's hash to reuse Ben's answer for that grant (commit security review, 2026-11-01).
  */
-export async function grantHashOf(r: WriterRecord): Promise<string> {
+export async function grantHashOf(r: WriterRecord): Promise<string | undefined> {
+  // Only the shapes the desk sends, so the canonical form has one reading: text params and requester,
+  // a whole-number expiry. Anything else (1e400 becomes null, -0 becomes 0) gets no hash at all.
+  const params = r.params as Record<string, unknown> | undefined;
+  if (!params || typeof params !== "object" || Array.isArray(params) || !Object.values(params).every((v) => typeof v === "string")) return undefined;
+  if (typeof r.requester !== "string" || !Number.isSafeInteger(r.expires_at) || Object.is(r.expires_at, -0)) return undefined;
   return sha256(canonical({ id: r.grant, job: r.job, params: r.params, requester: r.requester, expires_at: r.expires_at }));
 }
 
