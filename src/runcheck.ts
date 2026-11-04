@@ -18,13 +18,14 @@ const DAY_MS = 86_400_000;
 /** How long run-op state waits for the watermark before it is let go (Codex r1 #4): a week of stalled reads. */
 export const HOLD_MS = 7 * DAY_MS;
 
-interface Run extends RunSeen { at: number; first?: number; last?: number }
-interface Waiting { seq: number; sha: string; run: string; job: string; at: number }
+// `read`: when this checker first held the entry (its own clock), so a backlog read late is still held HOLD_MS.
+interface Run extends RunSeen { at: number; first?: number; last?: number; read?: number }
+interface Waiting { seq: number; sha: string; run: string; job: string; at: number; read?: number }
 /** Kept in the checker's saved state under `ops`; every field defaults empty for a state from before A. */
 export interface OpsState {
   runs: Record<string, Run>; // by run-open grant id, until deadline + 24 h is behind the watermark
   open: Record<string, Waiting>; // ops with no valid result yet, by op id
-  seen: Record<string, { until: number; end: "open" | "result" | "expired" }>; // every op id, for duplicates and late results
+  seen: Record<string, { until: number; end: "open" | "result" | "expired"; read?: number }>; // every op id, for duplicates and late results
   through?: number; // complete_through (W4): every record recorded at or before it has been read
   days: Record<string, number>; // op-pool records by UTC day
   written: number; // bytes of stored objects, from the hourly reads; the daily count sets it exactly
@@ -32,7 +33,7 @@ export interface OpsState {
   first?: string; // the first UTC day this checker counted bytes: no runway alert for 7 full days after
   kinds: { tap: number; op: number }; // written bytes by kind
   incomplete: number; resolved: number; delay_max: number;
-  unsettled: number; // ops let go unsettled because the watermark stalled past HOLD_MS (never called incomplete)
+  unsettled: number; // ops let go as op-unsettled because no complete read came for HOLD_MS after they were read
 }
 const bare = <T>(o: unknown): Record<string, T> => Object.assign(Object.create(null), o && typeof o === "object" ? o : {});
 const num = (v: unknown) => (Number.isFinite(v) ? (v as number) : 0);
@@ -109,11 +110,17 @@ export async function settle(s: OpsState, now: number, complete: boolean): Promi
   const out: Finding[] = [];
   // A watermark held back (a planted higher number, a stuck read) must not hold state forever (Codex r1 #4):
   // past HOLD_MS, open ops are let go and counted as unsettled, never as incomplete, and the rest is pruned.
+  // The hold runs from when this checker first held each entry, never from its recorded time (commit security review).
+  for (const x of [...Object.values(s.open), ...Object.values(s.seen), ...Object.values(s.runs)]) x.read ??= now;
   const hold = now - HOLD_MS;
-  for (const [id, o] of Object.entries(s.open)) if (o.at < hold && (s.through ?? 0) <= o.at + RESULT_MS) delete s.open[id], s.unsettled++;
-  for (const [id, x] of Object.entries(s.seen)) if (x.until < hold && !Object.hasOwn(s.open, id)) delete s.seen[id];
-  for (const [g, r] of Object.entries(s.runs)) if (r.at + RUN_MAX_MS < hold) delete s.runs[g];
-  if (s.unsettled) out.push({ id: `op-unsettled:${s.unsettled}`, text: `${s.unsettled} run op${s.unsettled === 1 ? "" : "s"} could not be settled: the records check has not finished a complete read for over 7 days` });
+  for (const [id, o] of Object.entries(s.open)) {
+    if (o.read! >= hold || (s.through ?? 0) > o.at + RESULT_MS) continue;
+    out.push({ id: `op-unsettled:${id}`, text: `run op ${await fp(id)} (record ${o.seq}) could not be settled: no complete read of the records for 7 days after it was read` });
+    delete s.open[id];
+    s.unsettled++;
+  }
+  for (const [id, x] of Object.entries(s.seen)) if (x.read! < hold && x.until < now - RESULT_MS && !Object.hasOwn(s.open, id)) delete s.seen[id];
+  for (const [g, r] of Object.entries(s.runs)) if (r.read! < hold && r.at + RUN_MAX_MS < now - RESULT_MS) delete s.runs[g];
   const through = s.through;
   if (through === undefined) return out;
   for (const [id, o] of Object.entries(s.open)) {

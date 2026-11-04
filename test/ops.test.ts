@@ -384,5 +384,19 @@ test("Codex r1 #4: a watermark stalled over 7 days lets run-op state go as unset
   assert.equal(r.ops.ops_open, 1);
   r = await w.run(NOW);
   assert.deepEqual([r.ops.ops_open, r.ops.runs_open], [0, 0]);
-  assert.ok(w.ids().includes("op-unsettled:1") && !has(w.ids(), "op-incomplete").length);
+  assert.ok(w.ids().includes(`op-unsettled:${OP}`) && !has(w.ids(), "op-incomplete").length);
+  assert.ok(!w.incidents().some((i) => i.text.includes(OP)), "named by fingerprint only");
+});
+
+test("commit security review: an op first read after a week-long backlog is held 7 days from its reading, so its result still links", async () => {
+  const w = await world();
+  const t = NOW - 8 * DAY - HOUR, req = await openRun(w, t);
+  const op = await w.put(OP, "op", opRec(req), t + 2 * MIN);
+  w.b.store.set(`records/v1/000000999999.grant-0009.request.json`, { body: "x", uploaded: new Date(NOW) }); // holds the watermark
+  let r = await w.run(NOW); // first read of the op, 8 days after it was recorded
+  assert.equal(r.ops.ops_open, 1);
+  await w.put(OP, "op_result", doneRec(op.sha), t + 3 * MIN);
+  r = await w.run(NOW + HOUR);
+  assert.equal(r.ops.results, 1);
+  assert.deepEqual(has(w.ids(), "op-u"), []);
 });

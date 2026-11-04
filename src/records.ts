@@ -73,7 +73,7 @@ const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 
 // Kinds a full run computes afresh (`sweep`: carried hourly from the last daily count): they leave
 // the list when a full run no longer finds them. Every other kind is about a record read once and
 // locked for 400 days, so it stays listed.
-const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep", "unreadable", "pool", "capacity", "runway", "op-unsettled"]);
+const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep", "unreadable", "pool", "capacity", "runway"]);
 const isFinding = <T>(f: T): f is T & Finding => typeof (f as Finding)?.id === "string" && typeof (f as Finding)?.text === "string";
 
 /** Checks one stored record on its own: its envelope against its name and R2's upload time, then the writer's body. */
