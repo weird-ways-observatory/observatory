@@ -23,17 +23,18 @@ describe("mutation harness", { concurrency: true }, () => {
     ["timeout", 1, /^INVALID timeout .*killed by SIGKILL \(timeout 4000 ms\)$/m],
     ["zero-tests", 1, /^INVALID zero-tests .*baseline: 0 tests named "clamp caps" ran$/m],
     ["wrong-message", 1, /^INVALID wrong-message .*does not contain "some-other-message"/m],
+    ["baseline-fails", 1, /^INVALID baseline-fails .*baseline: designated test fails unmutated \(broken-baseline\)$/m],
   ];
   for (const [id, code, line] of cases)
     test(`fixture mutant ${id}`, () => {
       const r = one(id);
-      assert.match(r.out, line, r.out);
-      assert.equal(r.code, code, `exit code for ${id}: ${r.out}`);
+      assert.match(r.out, line, `fixture ${id} output: ${r.out}`);
+      assert.equal(r.code, code, `fixture ${id} exit code: ${r.out}`);
     });
 
   test("a whole run fails when any mutant is not caught, and lists retired entries", () => {
     const r = run();
-    assert.match(r.out, /^1\/10 caught; 9 not caught -- run FAILS$/m, r.out);
+    assert.match(r.out, /^1\/11 caught; 10 not caught -- run FAILS$/m, r.out);
     assert.match(r.out, /^RETIRED old: fixture: shows a retired entry is listed$/m, r.out);
     assert.equal(r.code, 1);
   });

@@ -4,6 +4,8 @@
 export default async function* reporter(source) {
   for await (const e of source) {
     if (e.type !== "test:pass" && e.type !== "test:fail") continue;
+    // A describe() group is not a test; the harness still requires exactly one event for the named test.
+    if (e.data.details?.type === "suite") continue;
     const cause = e.data.details?.error?.cause;
     yield `${JSON.stringify({
       ok: e.type === "test:pass",

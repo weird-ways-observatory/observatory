@@ -6,7 +6,7 @@ import { b64, keyFor, MAX_STORED_BYTES, sealed, sha256, STORE_BUDGET_BYTES, type
 import { canonical } from "../src/recorder/passkey.ts";
 import { Ledger, type Storage } from "../src/recorder/ledger.ts";
 import { OP_DAY_CAP, opKeyFor, OPS_FROM, parseDescriptor, poolUse, RUN_CUTOFF_BYTES, validateOp, type OpStage } from "../src/ops.ts";
-import { capacityFindings, loadOps } from "../src/runcheck.ts";
+import { capacityFindings, loadOps, onApproval, onRequest } from "../src/runcheck.ts";
 import { MAX_OPEN, runRecords, STATE_KEY, type Pin, type RecordsEnv } from "../src/records.ts";
 
 const NOW = Date.parse("2026-11-05T12:00:00.000Z");
@@ -67,6 +67,12 @@ async function openRun(w: W, at: number, { approve = true, descriptor = desc(at)
 const opRec = (runRequest: string, over: object = {}) => ({ job: "cf.dns.list", run_grant: RG, run_request: runRequest, run: RUN, card: CARD, template: 1, params: { zone: ZONE.name }, ...over });
 const doneRec = (opSha: string, over: object = {}) => ({ job: "cf.dns.list", run: RUN, op: opSha, outcome: "done", answer_sha256: "c".repeat(64), ...over });
 const has = (ids: string[], kind: string) => ids.filter((i) => i.startsWith(kind));
+// An incident's text, failing as an assertion (not a TypeError) when the incident is missing (card 0d001fc3).
+const textOf = (w: W, pick: (id: string) => boolean, what: string) => {
+  const i = w.incidents().find((x) => pick(x.id));
+  assert.ok(i, `${what}: no such incident`);
+  return i.text;
+};
 
 // ---- the format, on its own
 
@@ -156,9 +162,20 @@ test("row 9 (V7.4): a mismatched approval never counts: not for a run, and not f
   await w.run(NOW);
   const ids = w.ids();
   assert.ok(ids.includes(`mismatch:${RG}`) && ids.includes("mismatch:grant-0001") && ids.includes("mismatch:runopen-0002"));
-  assert.match(w.incidents().find((i) => i.id === "op-uncovered:op-0000000002")!.text, /no approval/);
-  assert.match(w.incidents().find((i) => i.id === `op-uncovered:${OP}`)!.text, /no approval/);
+  assert.match(textOf(w, (id) => id === "op-uncovered:op-0000000002", "op 2 uncovered"), /no approval/);
+  assert.match(textOf(w, (id) => id === `op-uncovered:${OP}`, "op 1 uncovered"), /no approval/);
   assert.ok(ids.includes("unapproved:grant-0001"), "the result is unapproved: the mismatched approval did not count");
+});
+
+test("row 1: onApproval marks a run approved only by an approval naming the run's own request", () => {
+  // Defence in depth: records.ts's order check already refuses such an approval (row 9), so only a direct call
+  // shows this check works (card 0d001fc3: A's mutant "approval not bound to the run's request" survived).
+  const s = loadOps(undefined);
+  onRequest(s, RG, 1, "a".repeat(64), "cf.run.open", { params: { descriptor: desc(NOW) } }, NOW);
+  onApproval(s, RG, "b".repeat(64));
+  assert.equal(s.runs[RG].approved, false, "an approval naming another request does not approve the run");
+  onApproval(s, RG, "a".repeat(64));
+  assert.equal(s.runs[RG].approved, true, "the run's own approval does");
 });
 
 test("rows 2, 3: an ordinary grant, or a run-open request carrying more than the descriptor, covers nothing; an unknown run is unlinked", async () => {
@@ -295,7 +312,7 @@ test("row 14 (X1): an op stored 11 minutes late is never covered; a late-stored 
   await w.put(OP, "op_result", doneRec(ok.sha), t + 4 * MIN, 11 * MIN);
   await w.run(NOW);
   const ids = w.ids();
-  assert.match(w.incidents().find((i) => i.id.startsWith("op-uncovered:op-lateop01"))!.text, /stored late/);
+  assert.match(textOf(w, (id) => id.startsWith("op-uncovered:op-lateop01"), "late op uncovered"), /stored late/);
   assert.ok(ids.includes(`op-incomplete:${OP}`), "the late result did not resolve its op");
 });
 
@@ -347,6 +364,7 @@ test("row 18 (W6): a state from before A loads with empty run-op state and raise
   const w = await world();
   await w.put("grant-0001", "request", { job: "cf.token.canary" }, NOW - HOUR);
   await w.copy.put(STATE_KEY, JSON.stringify({ seq: 0, open: {}, days: {}, incidents: [] }));
+  assert.equal(typeof loadOps({ seq: 0, open: {}, days: {}, incidents: [] }).runs, "object", "pre-A state loads empty runs");
   const r = await w.run(NOW);
   assert.equal(r.records, "ran");
   assert.deepEqual(w.ids().filter((i) => !i.startsWith("lock")), []);
