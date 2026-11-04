@@ -195,6 +195,24 @@ test("row 6: budget counts unique ops; the one past it is uncovered; a second re
   assert.deepEqual(has(ids, "op-uncovered"), ["op-uncovered:op-0000000003"]);
 });
 
+test("row 1 (commit security review): a reused run-open grant id voids the run; its new approval never approves the old descriptor", async () => {
+  const w = await world();
+  const t = NOW - 3 * HOUR, req = await openRun(w, t, { approve: false });
+  // The grant map lets the first request go (MAX_OPEN newer grants), so the reused id passes the order check.
+  const open = Object.fromEntries(Array.from({ length: MAX_OPEN }, (_, i) => [`seeded-${String(i).padStart(6, "0")}`, { job: "cf.token.canary", req: "e".repeat(64), at: NOW - HOUR, stages: ["request"] }]));
+  await w.run(t + MIN);
+  const st = JSON.parse(w.copy.store.get(STATE_KEY)!.body);
+  await w.copy.put(STATE_KEY, JSON.stringify({ ...st, open: { ...st.open, ...open } }));
+  await w.run(t + 2 * MIN);
+  // Identical request bytes again (same hash, so binding the approval to the hash alone would pass), then a different one.
+  await openRun(w, t);
+  const again = await openRun(w, t + 3 * MIN, { descriptor: desc(t, { budget: 1 }) });
+  await w.put(OP, "op", opRec(req), t + 5 * MIN);
+  await w.put("op-0000000002", "op", opRec(again), t + 6 * MIN);
+  await w.run(NOW);
+  assert.ok(w.ids().includes(`op-uncovered:${OP}`) && w.ids().includes("op-uncovered:op-0000000002"));
+});
+
 test("row 10: an op id equal to a grant id: each is checked in its own map", async () => {
   const w = await world();
   const t = NOW - 3 * HOUR, req = await openRun(w, t);

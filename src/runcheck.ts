@@ -43,14 +43,16 @@ export function loadOps(x: unknown): OpsState {
 
 /** A request that passed the order check: a run-open request becomes a run, with its descriptor parsed once. */
 export function onRequest(s: OpsState, grant: string, seq: number, sha: string, job: string, record: Record<string, unknown>, at: number) {
-  if (job !== RUN_OPEN_JOB || Object.hasOwn(s.runs, grant)) return;
+  // A grant id seen again (possible only once the grant map has let the first go): the run covers nothing.
+  if (Object.hasOwn(s.runs, grant)) return void Object.assign(s.runs[grant], { descriptor: "run-open grant id was used twice", approved: false });
+  if (job !== RUN_OPEN_JOB) return;
   const p = record.params as Record<string, unknown> | undefined;
   const only = p && typeof p === "object" && !Array.isArray(p) && Object.keys(p).length === 1 && Object.hasOwn(p, "descriptor");
   s.runs[grant] = { seq, sha, descriptor: only ? parseDescriptor(p.descriptor, at) : "run-open request carries more than the descriptor", approved: false, ops: 0, at };
 }
-/** An approval that passed the order check (V7.4): only this marks a run approved. */
-export function onApproval(s: OpsState, grant: string) {
-  if (Object.hasOwn(s.runs, grant)) s.runs[grant].approved = true;
+/** An approval that passed the order check (V7.4) and names the run's own request: only this marks a run approved. */
+export function onApproval(s: OpsState, grant: string, request: string | undefined) {
+  if (Object.hasOwn(s.runs, grant) && s.runs[grant].sha === request) s.runs[grant].approved = true;
 }
 
 /** An op record that failed its own checks (malformed, or stored over 10 minutes late, X1): never covered. */

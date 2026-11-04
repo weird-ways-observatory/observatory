@@ -407,7 +407,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
               const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, o.uploaded.getTime(), next, shown);
               if (f) findings.push(f);
               else if (stage === "request") onRequest(ops, grant, next, r.env!.sha256, r.job!, r.record!, Date.parse(r.env!.recorded_at));
-              else if (stage === "approval") onApproval(ops, grant);
+              else if (stage === "approval") onApproval(ops, grant, r.request);
             }
           }
         } catch {
