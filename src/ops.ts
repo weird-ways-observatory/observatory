@@ -36,6 +36,7 @@ export const RUN_CUTOFF_BYTES = 5 * 1024 ** 3; // ops stop being admitted past t
 
 export type OpStage = "op" | "op_result";
 export type AnyStage = Stage | OpStage;
+/** True for the two op stages, which have their own format and pool. */
 export const isOpStage = (s: string): s is OpStage => s === "op" || s === "op_result";
 // Op records get their own name pattern; the shared KEY stays unchanged, so recorder names do not change.
 const ID = "[A-Za-z0-9][A-Za-z0-9_-]{7,63}";
@@ -46,6 +47,7 @@ export function nameOf(name: string): { n: number; grant: string; stage: AnyStag
   const m = ANY_KEY.exec(name);
   return m ? { n: Number(m[1]), grant: m[2], stage: m[3] as AnyStage, ...(m[4] ? { tag: m[4] } : {}) } : undefined;
 }
+/** The stored name for an op record, as keyFor names grant records. */
 export const opKeyFor = (seq: number, op: string, stage: OpStage, tag?: string) => `${ROOT}${String(seq).padStart(12, "0")}.${op}.${stage}${tag ? `.${tag}` : ""}.json`;
 
 /** What Ben's run-open tap approves (V4): the vault's RunRecord fields, `budget` = budget.max. */

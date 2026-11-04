@@ -31,6 +31,7 @@ export interface OpsState {
 }
 const bare = <T>(o: unknown): Record<string, T> => Object.assign(Object.create(null), o && typeof o === "object" ? o : {});
 const num = (v: unknown) => (Number.isFinite(v) ? (v as number) : 0);
+/** The saved run-op state, or empty fields where it is missing or from before A (threat 18). */
 export function loadOps(x: unknown): OpsState {
   const o = (x && typeof x === "object" ? x : {}) as Partial<OpsState>;
   return {
