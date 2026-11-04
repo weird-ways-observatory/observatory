@@ -12,7 +12,9 @@
 // nobody can mark one seen. Threat table: studio-os docs/specifications/trust-but-verify/
 // RECORDS-LIGHT-THREATS-af0e4a2f.md.
 import { alert, redact, type AlertEnv } from "./alert.ts";
-import { DAY_CAP, GRANT_TTL_MS, KEY, MAX_STORED_BYTES, ROOT, sealed, sha256, SKEW_MS, unb64, validate, type Envelope, type Stage } from "./contract.ts";
+import { DAY_CAP, GRANT_TTL_MS, MAX_STORED_BYTES, ROOT, sealed, sha256, SKEW_MS, unb64, validate, type Envelope, type Stage } from "./contract.ts";
+import { isOpStage, nameOf, OPS_FROM, poolUse, validateOp, type AnyStage, type Op, type OpResult } from "./ops.ts";
+import { badOp, capacityFindings, countBytes, fp, loadOps, measures, onApproval, onOp, onRequest, onResult, poolFindings, pruneDays, settle, type OpsState } from "./runcheck.ts";
 import { readLockLength, type LockEnv } from "./lock.ts";
 
 export interface RecordsEnv extends AlertEnv, LockEnv {
@@ -41,6 +43,7 @@ export const MAX_COPIES = 20; // objects read at one record number before the ho
 export const MAX_INCIDENTS = 200; // open incidents kept, worst first
 export const MAX_DROPPED = 5_000; // ids of incidents with no room, kept so the overflow line knows what is new
 export const MAX_SWEEP_READS = 20; // record numbers with extra names the daily count reads
+export const TAIL_PAGES = 5; // pages of names after the bookmark listed to prove nothing higher exists (X2)
 export const REMIND_DAY = 1, REMIND_HOUR = 14; // UTC Monday 14:00 (8 am Central): the weekly list of what is open
 
 /** One finding: `id` is stable across hours so Ben hears about it once. Text never holds writer-chosen words. */
@@ -51,7 +54,7 @@ interface Open { job: string; req: string; at: number; stages: Stage[] }
 // `sealed`: numbers from the pin's start up to `to` were confirmed signed under the pin with this key.
 // `held`/`snap` come only from the checker before signing; they are read once, never saved again.
 // `alerted`/`queued` come only from the checker before af0e4a2f: read once to carry what was told.
-interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedFull?: boolean; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[] }
+interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedFull?: boolean; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[]; ops?: OpsState }
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -60,25 +63,21 @@ const tag = async (name: string) => (await sha256(name)).slice(0, 12);
 // A name under records/v1/ outside the record format: locked like a record, so it stays listed.
 const junk = async (name: string): Promise<Finding> => { const t = await tag(name); return { id: `junk:${t}`, text: `something outside the record format, fingerprint ${t}` }; };
 const pad = (n: number) => String(n).padStart(12, "0");
-/**
- * How a grant id appears in alerts: the first 16 hex of its SHA-256, never the id itself, so a
- * writer cannot put words into Ben's alerts, and cannot make one grant's fingerprint look like
- * another's. Grant findings also name the record number, which settles any doubt.
- */
-export const fp = async (grant: string) => `#${(await sha256(grant)).slice(0, 16)}`;
+// How a grant id appears in alerts (runcheck.ts fp): a fingerprint, never the id. Grant findings also name the record number.
+export { fp };
 // Worst first: what ran unrecorded or unchecked before what is merely malformed.
-const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "cap", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
+const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
 const LOW = RANK.indexOf("junk"); // junk and stray: cheap for a writer to make by the thousand
 const kind = (id: string) => id.split(":")[0];
 const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 ? RANK.length : i; };
 // Kinds a full run computes afresh (`sweep`: carried hourly from the last daily count): they leave
 // the list when a full run no longer finds them. Every other kind is about a record read once and
 // locked for 400 days, so it stays listed.
-const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep", "unreadable"]);
+const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep", "unreadable", "pool", "capacity", "runway"]);
 const isFinding = <T>(f: T): f is T & Finding => typeof (f as Finding)?.id === "string" && typeof (f as Finding)?.text === "string";
 
 /** Checks one stored record on its own: its envelope against its name and R2's upload time, then the writer's body. */
-export async function checkStored(seq: number, grant: string, stage: Stage, uploaded: Date, stored: string): Promise<{ finding?: Finding; env?: Envelope; job?: string; request?: string }> {
+export async function checkStored(seq: number, grant: string, stage: AnyStage, uploaded: Date, stored: string): Promise<{ finding?: Finding; env?: Envelope; job?: string; request?: string; record?: Record<string, unknown> }> {
   const shown = await fp(grant);
   const bad = (why: string) => ({ finding: { id: `bad:${seq}`, text: `record ${seq} (${shown}/${stage}): ${why}` } });
   let e: Envelope;
@@ -87,21 +86,23 @@ export async function checkStored(seq: number, grant: string, stage: Stage, uplo
         } catch {
     return bad("not JSON");
   }
-  if (!e || (e.v !== 1 && e.v !== 2) || e.seq !== seq || e.grant !== grant || e.stage !== stage) return bad("its envelope does not match its name");
+  if (!e || (e.v !== 1 && e.v !== 2) || e.seq !== seq || e.grant !== grant || (e.stage as AnyStage) !== stage) return bad("its envelope does not match its name");
   if (typeof e.recorded_at !== "string" || !ISO.test(e.recorded_at) || Math.abs(Date.parse(e.recorded_at) - uploaded.getTime()) > SKEW_MS) return bad("its recorded time is missing or far from when it was stored");
   if (typeof e.body !== "string" || e.sha256 !== (await sha256(e.body))) return bad("its body does not match its hash");
-  const v = validate(e.body);
+  // Op records have their own format (ops.ts); everything else is the grant contract, unchanged.
+  const v = isOpStage(stage) ? validateOp(e.body) : validate(e.body);
   if (!v.ok) return bad(v.why);
   if (v.record.grant !== grant || v.record.stage !== stage) return bad("its body names a different grant or stage than its name");
-  return { env: e, job: v.record.job, request: v.record.request };
+  const r = v.record as unknown as Record<string, unknown>;
+  return { env: e, job: v.record.job, request: typeof r.request === "string" ? r.request : undefined, record: r };
 }
 
 /** True if `text` is an envelope the recorder signed for exactly this object name and number. */
 export async function signedBy(key: CryptoKey, n: number, name: string, text: string): Promise<boolean> {
-  const m = KEY.exec(name);
+  const m = nameOf(name);
   try {
     const e = JSON.parse(text) as Envelope;
-    if (!m || Number(m[1]) !== n || !e || e.v !== 2 || e.seq !== n || e.grant !== m[2] || e.stage !== m[3] || e.tag !== m[4] || typeof e.sig !== "string") return false;
+    if (!m || m.n !== n || !e || e.v !== 2 || e.seq !== n || e.grant !== m.grant || (e.stage as AnyStage) !== m.stage || e.tag !== m.tag || typeof e.sig !== "string") return false;
     return await crypto.subtle.verify("Ed25519", key, unb64(e.sig), sealed(e));
   } catch {
     return false;
@@ -146,8 +147,10 @@ export function checkOrder(open: Record<string, Open>, grant: string, stage: Sta
     return { id: `${stage === "approval" ? "approval-first" : "verdict-first"}:${grant}`, text: `grant ${shown} (record ${n}) has a${stage === "approval" ? "n approval" : " verdict"} with no request record before it` };
   }
   if (g.stages.includes(stage)) return { id: `duplicate:${grant}:${stage}`, text: `grant ${shown} (record ${n}) has a second ${stage} record` };
-  g.stages.push(stage);
+  // A stage counts as present only once it names its own request and job (card 1a272a5c V7.4): a
+  // mismatched approval never makes a later result look approved, nor a run look approved.
   if (request !== g.req || job !== g.job) return { id: `mismatch:${grant}`, text: `grant ${shown} (record ${n}): a later record names a different request or job than its request record` };
+  g.stages.push(stage);
   if (stage === "result" && !g.stages.includes("approval")) return { id: `unapproved:${grant}`, text: `grant ${shown} (record ${n}) has a result with no approval record before it` };
   return undefined;
 }
@@ -158,7 +161,7 @@ async function namesAt(bucket: Pick<R2Bucket, "list">, prefix: string): Promise<
   let cursor: string | undefined, seen = 0;
   do {
     const page = await bucket.list({ prefix, cursor, limit: 1000 });
-    for (const o of page.objects) (KEY.test(o.key) ? cands.push(o) : junk.push(o.key));
+    for (const o of page.objects) (nameOf(o.key) ? cands.push(o) : junk.push(o.key));
     seen += page.objects.length;
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor && seen < MAX_NAMES_AT);
@@ -187,9 +190,9 @@ async function strays(bucket: Pick<R2Bucket, "list">): Promise<Finding[]> {
  * `incomplete` says why the count did not read everything it should (the run is then unverified).
  * `cleared`: numbers it read today and found readable and not crowded, counted before any cap.
  */
-async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<{ found: Finding[]; incomplete?: string; cleared: Set<number> }> {
+async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | undefined, from: number, seq: number, now: Date): Promise<{ found: Finding[]; incomplete?: string; cleared: Set<number>; bytes: number }> {
   const out: Finding[] = [], junked: Finding[] = [], shared: { n: number; cands: R2Object[] }[] = [];
-  let cursor: string | undefined, last = 0, here: R2Object[] = [], over = 0, incomplete: string | undefined;
+  let cursor: string | undefined, last = 0, here: R2Object[] = [], over = 0, incomplete: string | undefined, bytes = 0;
   // Junk is kept apart (bounded) so a flood of junk names can never crowd out a plant or a gap.
   const add = (f: Finding) => out.push(f);
   const close = () => { if (here.length > 1) shared.push({ n: last, cands: here }); };
@@ -201,10 +204,11 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
     }
     const page = await bucket.list({ prefix: ROOT, cursor, limit: 1000 });
     for (const o of page.objects) {
-      const m = KEY.exec(o.key);
+      const m = nameOf(o.key);
       if (!m) { if (junked.length < MAX_SWEPT) junked.push(await junk(o.key)); else over++; continue; }
-      const n = Number(m[1]);
+      const n = m.n;
       if (n > seq) continue; // not read yet: the hourly read reaches it
+      bytes += o.size; // every object at a read number, the recorder's or not: what the bucket holds
       if (n !== last) { close(); lost(n); last = n; here = []; }
       here.push(o);
     }
@@ -231,13 +235,14 @@ async function sweep(bucket: Pick<R2Bucket, "list" | "get">, key: CryptoKey | un
   over += all.length - kept.length;
   if (over) kept.push({ id: `sweep:over:${over}`, text: `${over} more findings from the daily count could not be kept: read the records` });
   const stuckAt = new Set(out.map((f) => numberOf(f.id)));
-  return { found: kept, incomplete, cleared: new Set(window.map((w) => w.n).filter((n) => !stuckAt.has(n))) };
+  return { found: kept, incomplete, cleared: new Set(window.map((w) => w.n).filter((n) => !stuckAt.has(n))), bytes };
 }
 
 export type RecordsVerdict = "ran" | "unverified";
 
 /** One hour's run: read what is new, judge, alert once per new finding that is delivered, keep state, ping. `pin` null: no pin. */
-export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, pin: Pin | null = PIN ?? null) {
+/** `opsFrom`: ops.ts OPS_FROM, a reviewed constant (never an env var); tests pass their own, as with `pin`. */
+export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, pin: Pin | null = PIN ?? null, opsFrom: number | undefined = OPS_FROM) {
   let prev: State = {};
   try {
     const saved = await env.COPY.get(STATE_KEY);
@@ -255,6 +260,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     if (prev.snap && Number.isInteger(prev.snap.seq)) ({ seq } = prev.snap), (open = bare<Open>(prev.snap.open)), (days = bare<number>(prev.snap.days));
     else if (n.length) seq = Math.min(seq, Math.min(...n) - 1);
   }
+  const ops = loadOps(prev.ops); // run ops (card 1a272a5c): defaults empty for a state from before
+  let ended = false, tailClear = false; // the read reached an empty next number; nothing higher is listed
   let swept = Array.isArray(prev.swept) ? prev.swept.filter(isFinding).filter((f) => !OLD_FOREIGN.test(f.id)).slice(0, MAX_SWEPT + 1) : [];
   const findings: Finding[] = [];
   let cleared = new Set<number>(); // set only on the daily count's hour
@@ -325,9 +332,18 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
           // Nothing at the next number: the recorder has not written it yet. Anything right after
           // it is either a gap (a higher number without this one) or something outside the format.
           const after = (await env.RECORDS.list({ prefix: ROOT, startAfter: at, limit: 1 })).objects[0];
-          const am = after && KEY.exec(after.key);
+          const am = after && nameOf(after.key);
           if (after && !am) findings.push(await junk(after.key));
-          else if (am) findings.push({ id: `gap:${Number(am[1])}`, text: `record numbers jumped from ${seq} to ${Number(am[1])}: number ${next} is missing` });
+          else if (am) findings.push({ id: `gap:${am.n}`, text: `record numbers jumped from ${seq} to ${am.n}: number ${next} is missing` });
+          ended = true;
+          // The watermark's proof (X2): every name after the bookmark, paged to the end, holds no higher number.
+          let cursor: string | undefined, pages = 0, higher = false;
+          do {
+            const page = await env.RECORDS.list({ prefix: ROOT, startAfter: at, cursor, limit: 1000 });
+            higher ||= page.objects.some((x) => (nameOf(x.key)?.n ?? 0) > seq);
+            cursor = page.truncated ? page.cursor : undefined;
+          } while (cursor && !higher && ++pages < TAIL_PAGES);
+          tailClear = !higher && !cursor;
           break;
         }
         if (cands.length > MAX_COPIES) {
@@ -361,8 +377,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
           checked++;
           continue;
         }
-        const m = KEY.exec(o.key)!;
-        const grant = m[2], stage = m[3] as Stage;
+        const m = nameOf(o.key)!;
+        const grant = m.grant, stage = m.stage;
         const shown = await fp(grant);
         try {
           if (body === undefined && o.size > MAX_STORED_BYTES) {
@@ -379,10 +395,19 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
           }
           if (body !== null) {
             const r = await checkStored(next, grant, stage, o.uploaded, body);
-            if (r.finding) findings.push(r.finding);
-            else {
+            if (r.finding) {
+              findings.push(r.finding);
+              if (stage === "op") findings.push(await badOp(next, grant)); // never covered (X1)
+            } else if (isOpStage(stage)) {
+              // Op times are the signed recorded_at alone (W1); the op chain never touches the grant map.
+              const t = Date.parse(r.env!.recorded_at);
+              const job = (g: string) => (Object.hasOwn(open, g) ? open[g].job : undefined);
+              findings.push(...(stage === "op" ? await onOp(ops, next, r.record as unknown as Op, r.env!.sha256, t, job, opsFrom) : await onResult(ops, next, r.record as unknown as OpResult, t)));
+            } else {
               const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, o.uploaded.getTime(), next, shown);
               if (f) findings.push(f);
+              else if (stage === "request") onRequest(ops, grant, next, r.env!.sha256, r.job!, r.record!, Date.parse(r.env!.recorded_at));
+              else if (stage === "approval") onApproval(ops, grant);
             }
           }
         } catch {
@@ -390,7 +415,9 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
         }
         seq = next;
         const d = day(o.uploaded);
-        days[d] = (days[d] ?? 0) + 1;
+        if (isOpStage(stage)) ops.days[d] = (ops.days[d] ?? 0) + 1; // each pool counted apart
+        else days[d] = (days[d] ?? 0) + 1;
+        countBytes(ops, d, o.size, isOpStage(stage));
         checked++;
       }
       if (checked === PAGE && verdict === "ran") findings.push({ id: `backlog:${day(now)}`, text: `${PAGE} new records in an hour, over what the recorder can take: the rest are read next hour` });
@@ -400,6 +427,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
         swept = s.found;
         cleared = s.cleared;
         if (s.incomplete) (verdict = "unverified"), (reason = s.incomplete);
+        else ops.written = s.bytes; // the daily count's exact total replaces the hourly sum
       }
     } catch {
       verdict = "unverified";
@@ -407,6 +435,11 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     }
   }
   for (const [d, n] of Object.entries(days)) if (n > DAY_CAP) findings.push({ id: `cap:${d}`, text: `${n} records stored on ${d}, over the cap of ${DAY_CAP}` });
+  // Run ops: a complete read moves the watermark (W4); then pools, the op day cap and storage (W8, X4).
+  findings.push(...(await settle(ops, now.getTime(), verdict === "ran" && checked < PAGE && ended && tailClear)));
+  const use = poolUse(now.getTime(), { tap: days[day(now)] ?? 0, op: ops.days[day(now)] ?? 0 }, Object.values(open).map((g) => ({ opened: g.at, stored: g.stages.length })), Object.values(ops.open));
+  findings.push(...poolFindings(ops, day(now), use, DAY_CAP), ...capacityFindings(ops, now.getTime(), use.reserved_bytes));
+  pruneDays(ops, now.getTime());
   findings.push(...swept);
   // Only numbers the main read itself checked under the key join the signed range; never after a
   // re-check that stopped short (it would mark unchecked numbers as signed).
@@ -500,14 +533,14 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   }
   if (verdict === "ran") reason = `${checked} new records read; ${listed.length} open incident${listed.length === 1 ? "" : "s"}${listed.length ? `: ${listed.map((i) => i.text).join("; ")}` : ""}`;
   try {
-    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull, unverifiedTold, reminded } satisfies State));
+    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull, unverifiedTold, reminded, ops } satisfies State));
   } catch {
     reason = `records state could not be saved; ${reason}`;
     verdict = "unverified";
   }
 
   // The light: "the checker ran and read what it should", never "the records are fine".
-  const report = { records: verdict, checked, seq, open: listed.length, new: fresh.length, lock: lock.verdict, reason: redact(reason, env).slice(0, 2000), setup: ping ? "complete" : "PING_URL_RECORDS not set: log only" };
+  const report = { records: verdict, checked, seq, open: listed.length, new: fresh.length, lock: lock.verdict, ops: measures(ops, use, day(now)), reason: redact(reason, env).slice(0, 2000), setup: ping ? "complete" : "PING_URL_RECORDS not set: log only" };
   console.log(JSON.stringify(report));
   if (ping) await fetchFn(new Request(verdict === "ran" ? ping : `${ping}/fail`, { method: "POST", body: JSON.stringify(report) })).catch(() => undefined);
   return report;

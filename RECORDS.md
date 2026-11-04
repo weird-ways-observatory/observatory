@@ -122,6 +122,31 @@ stays listed; the lock, gap, unreadable-number, stray-outside-v1, day-cap and ba
 leave when a run that read everything no longer finds them. Nothing marks an incident seen. The light (`PING_URL_RECORDS`)
 says only that the run read what it should. Until Ben sets `PING_URL_RECORDS`, it only logs.
 
+## Run operations (card 1a272a5c; build A: checked, not yet accepted)
+
+A run is one Face ID tap that covers up to 50 read ops for up to 24 hours. Today the recorder still
+refuses `op` and `op_result` (400 "no valid stage"); build B makes it accept them. The hourly checker
+already reads them, so nothing changes in the checker when B arrives. Format and rules: `src/ops.ts`;
+the checker's chain: `src/runcheck.ts`.
+
+- **Run open** is an ordinary grant with job `cf.run.open` and params exactly `{descriptor}`: canonical
+  JSON (sorted keys, no spaces) of `{run, cards, jobs, account, zones, template, deadline, budget}`.
+  Deadline is within 24 hours of the request's recorded time; budget is 1 to 50. Ben's passkey answer
+  covers exactly those bytes, through the grant hash.
+- **`op`** `{v, grant: <op id>, stage: "op", job, run_grant, run_request, run, card, template, params}`,
+  stored as `records/v1/<number>.<op id>.op.json`. Params are exactly the job's (`zone` as a zone name,
+  or `since`/`until`). It is *covered by Ben's passkey-approved run* only if its run-open request is at or
+  after `OPS_FROM` (unset in A, so nothing is covered yet), has an approval that passed the order check,
+  and the op is inside the descriptor, before the deadline and within the budget.
+- **`op_result`** `{v, grant: <same op id>, stage: "op_result", job, run, op: <sha256 of the op body>,
+  outcome, why | answer_sha256}`: outcome `done` carries the answer's hash; `refused`, `failed` and
+  `not_returned` carry one fixed `why` code. Never an answer body.
+- **Hourly findings:** `op-uncovered`, `op-unlinked` (no such run or op, or a result naming other bytes),
+  `op-late`, and `op-incomplete` (no valid result 24 hours after the op, raised only once a complete read
+  has passed that time). A record stored over 10 minutes after its recorded time never covers or resolves.
+- **Pools:** taps and ops have 400 slots a UTC day each; the checker alerts at 80% and 90% of each,
+  counting outstanding reservations, and on storage at 80% / 90% and under 60 / 30 days of runway.
+
 ## Choices for Ben to keep or change
 
 400 records a day (100 grants), 8192 bytes a record, a 1 GiB lifetime storage budget, 24 hours
