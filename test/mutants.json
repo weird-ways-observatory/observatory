@@ -651,19 +651,6 @@
       "expect": "fixture zero-tests output"
     },
     {
-      "id": "harness-child-context",
-      "row": "B0",
-      "file": "scripts/mutants.mjs",
-      "find": "  const { NODE_TEST_CONTEXT: _, ...env } = process.env;",
-      "replace": "  const env = process.env;",
-      "why": "harness rule (card 0d001fc3): under a parent runner the child must still report to the harness",
-      "test": {
-        "file": "test/mutants.test.ts",
-        "name": "fixture mutant kill"
-      },
-      "expect": "fixture kill output"
-    },
-    {
       "id": "harness-exit-code",
       "row": "B0",
       "file": "scripts/mutants.mjs",
@@ -781,5 +768,10 @@
       "expect": "fixture noisy-stdout output"
     }
   ],
-  "retired": []
+  "retired": [
+    {
+      "id": "harness-child-context",
+      "reason": "rule removed (B0, after Codex r1): the harness stripped NODE_TEST_CONTEXT because a child run under a parent runner reported to the parent; with in-process runs and the reporter writing to its own file this no longer happens -- the mutant survived, showing the strip had no effect, so the code was removed"
+    }
+  ]
 }
