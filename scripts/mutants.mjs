@@ -9,8 +9,10 @@
 //   5. exactly the designated test (that name, defined in that file) ran, not skipped, and its own body failed
 //      (failureType testCodeFailure, not a hook) with an AssertionError whose message contains `expect`; no
 //      suite failed except because of it; and the run exited 1 without a signal.
-// Tests run in the runner's own process (--experimental-test-isolation=none), so a kill or timeout ends the
-// whole run and is seen as a signal, and no worker outlives it (Codex B0 r1 #3, #6).
+// The test file runs directly (`node FILE`, node:test running in that one process, no --test runner): a module
+// that throws, even after registering tests, exits non-zero with no events; a kill, SIGTERM or SIGINT ends the
+// process and is seen as a signal; no test worker exists to outlive a timeout (Codex B0 r1 #3, #6; r2). Tests that
+// start their own processes must bound them themselves (test/mutants.test.ts does).
 // Anything else -- missing or duplicate anchor, compile error, a non-assertion throw, a hook failure, a skip,
 // a module that fails to load, a signal, a timeout, zero or extra tests -- FAILS the run as INVALID, and a test
 // that still passes is SURVIVED. The run exits 0 only when every listed mutant is CAUGHT.
@@ -81,10 +83,10 @@ function runTest(dir, test, timeout) {
   // Under a parent test runner node sets NODE_TEST_CONTEXT, and a child run then reports to that parent
   // instead of our reporter (seen as "0 tests ran"); the child must run as a top-level test run.
   const { NODE_TEST_CONTEXT: _, ...env } = process.env;
-  // The reporter writes to its own file: in-process, the code under test shares stdout (records.ts logs JSON).
+  // The reporter writes to its own file: the code under test shares stdout (records.ts logs JSON lines).
   const out = join(dir, ".mutants-events.jsonl");
   rmSync(out, { force: true });
-  const args = ["--test", "--experimental-test-isolation=none", `--test-reporter=${REPORTER}`, `--test-reporter-destination=${out}`, `--test-name-pattern=^${escape(test.name)}$`, test.file];
+  const args = [`--test-reporter=${REPORTER}`, `--test-reporter-destination=${out}`, `--test-name-pattern=^${escape(test.name)}$`, test.file];
   const r = spawnSync(process.execPath, args, {
     cwd: dir, env, encoding: "utf8", timeout, killSignal: "SIGKILL",
   });

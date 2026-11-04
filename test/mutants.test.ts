@@ -13,7 +13,7 @@ const runIn = (root: string, ...args: string[]) => {
   // Always as if under a parent test runner (node sets NODE_TEST_CONTEXT there), so the harness's handling of it
   // is exercised the same way under npm test and under the harness's own in-process runs.
   const env = { ...process.env, NODE_TEST_CONTEXT: "child-v8" };
-  const r = spawnSync(process.execPath, ["scripts/mutants.mjs", "--root", root, "--modules", `${process.cwd()}/node_modules`, "--timeout", "4000", ...args], { encoding: "utf8", env });
+  const r = spawnSync(process.execPath, ["scripts/mutants.mjs", "--root", root, "--modules", `${process.cwd()}/node_modules`, "--timeout", "4000", ...args], { encoding: "utf8", env, timeout: 300_000, killSignal: "SIGKILL" });
   return { code: r.status, out: r.stdout + r.stderr };
 };
 const one = (id: string) => run("--only", id);
@@ -26,7 +26,7 @@ describe("mutation harness", { concurrency: true }, () => {
     ["duplicate-anchor", 1, /^INVALID duplicate-anchor .*anchor occurs 3 times/m],
     ["compile-error", 1, /^INVALID compile-error .*does not typecheck: .*TS2322/m],
     ["runtime-throw", 1, /^INVALID runtime-throw .*failed with TypeError, not an assertion: boom$/m],
-    ["module-load", 1, /^INVALID module-load .*other test "test\/lib\.test\.ts" in no file finished \(fail\)$/m],
+    ["module-load", 1, /^INVALID module-load .*: 0 tests named "clamp caps at max" ran in test\/lib\.test\.ts$/m],
     ["timeout", 1, /^INVALID timeout .*timeout after 4000 ms$/m],
     ["zero-tests", 1, /^INVALID zero-tests .*baseline: 0 tests named "clamp caps" ran in test\/lib\.test\.ts$/m],
     ["wrong-message", 1, /^INVALID wrong-message .*does not contain "some-other-message"/m],
@@ -39,6 +39,9 @@ describe("mutation harness", { concurrency: true }, () => {
     ["self-kill", 1, /^INVALID self-kill .*killed by SIGKILL$/m],
     ["escape-path", 1, /^INVALID escape-path .*mutated file is outside the project or in node_modules$/m],
     ["nested-kill", 0, /^CAUGHT nested-kill \[self\]: "target" failed: clamp-cap$/m],
+    ["late-module-load", 1, /^INVALID late-module-load .*baseline: 0 tests named "target" ran in test\/lateload\.test\.ts$/m],
+    ["self-term", 1, /^INVALID self-term .*killed by SIGTERM$/m],
+    ["self-int", 1, /^INVALID self-int .*killed by SIGINT$/m],
     ["noisy-stdout", 0, /^CAUGHT noisy-stdout \[self\]: "target" failed: clamp-cap$/m],
   ];
   for (const [id, code, line] of cases)
@@ -50,7 +53,7 @@ describe("mutation harness", { concurrency: true }, () => {
 
   test("a whole run fails when any mutant is not caught, and lists retired entries", () => {
     const r = run();
-    assert.match(r.out, /^3\/19 caught; 16 not caught -- run FAILS$/m, r.out);
+    assert.match(r.out, /^3\/22 caught; 19 not caught -- run FAILS$/m, r.out);
     assert.match(r.out, /^RETIRED old: fixture: shows a retired entry is listed$/m, r.out);
     assert.equal(r.code, 1);
   });

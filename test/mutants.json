@@ -630,12 +630,12 @@
       "file": "scripts/mutants.mjs",
       "find": "  if (other.length) {",
       "replace": "  if (false) {",
-      "why": "harness rule (card 0d001fc3): a file-level failure must not pass as the named test",
+      "why": "harness rule (card 0d001fc3): a test from another file must not pass unnoticed beside the named one",
       "test": {
         "file": "test/mutants.test.ts",
-        "name": "fixture mutant module-load"
+        "name": "fixture mutant imported-test"
       },
-      "expect": "fixture module-load output"
+      "expect": "fixture imported-test output"
     },
     {
       "id": "harness-exactly-one",

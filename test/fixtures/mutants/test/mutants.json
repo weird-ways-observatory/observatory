@@ -246,6 +246,45 @@
         "name": "target"
       },
       "expect": "clamp-cap"
+    },
+    {
+      "id": "late-module-load",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "the module throws after registering the named test",
+      "test": {
+        "file": "test/lateload.test.ts",
+        "name": "target"
+      }
+    },
+    {
+      "id": "self-term",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "the process gets SIGTERM after the assertion",
+      "test": {
+        "file": "test/sig-sigterm.test.ts",
+        "name": "target"
+      }
+    },
+    {
+      "id": "self-int",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "the process gets SIGINT after the assertion",
+      "test": {
+        "file": "test/sig-sigint.test.ts",
+        "name": "target"
+      }
     }
   ],
   "retired": [
