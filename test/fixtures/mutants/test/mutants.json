@@ -1,0 +1,15 @@
+{
+  "mutants": [
+    { "id": "kill", "row": "self", "file": "src/lib.ts", "find": "  if (n > max) return max;\n", "replace": "", "why": "cap removed; the cap test catches it", "test": { "file": "test/lib.test.ts", "name": "clamp caps at max" }, "expect": "clamp-cap" },
+    { "id": "survivor", "row": "self", "file": "src/lib.ts", "find": "  if (n > max) return max;\n", "replace": "", "why": "cap removed; the designated test never exceeds max", "test": { "file": "test/lib.test.ts", "name": "clamp keeps small" }, "expect": "clamp-keep" },
+    { "id": "missing-anchor", "row": "self", "file": "src/lib.ts", "find": "if (n >= max)", "replace": "if (false)", "why": "stale anchor", "test": { "file": "test/lib.test.ts", "name": "clamp caps at max" }, "expect": "clamp-cap" },
+    { "id": "duplicate-anchor", "row": "self", "file": "src/lib.ts", "find": "return ", "replace": "return 0 * ", "why": "anchor not unique", "test": { "file": "test/lib.test.ts", "name": "clamp caps at max" }, "expect": "clamp-cap" },
+    { "id": "compile-error", "row": "self", "file": "src/lib.ts", "find": "  if (n > max) return max;\n", "replace": "  if (n > max) return \"max\";\n", "why": "mutant does not typecheck", "test": { "file": "test/lib.test.ts", "name": "clamp caps at max" }, "expect": "clamp-cap" },
+    { "id": "runtime-throw", "row": "self", "file": "src/lib.ts", "find": "  if (n > max) return max;\n", "replace": "  if (n > max) throw new TypeError(\"boom\");\n", "why": "a throw is not an assertion", "test": { "file": "test/lib.test.ts", "name": "clamp caps at max" }, "expect": "clamp-cap" },
+    { "id": "module-load", "row": "self", "file": "src/lib.ts", "find": "export function spin", "replace": "throw new Error(\"load\");\nexport function spin", "why": "module fails to load", "test": { "file": "test/lib.test.ts", "name": "clamp caps at max" }, "expect": "clamp-cap" },
+    { "id": "timeout", "row": "self", "file": "src/lib.ts", "find": "  while (i < limit) i++;\n", "replace": "  while (i < limit) i += 0;\n", "why": "never ends", "test": { "file": "test/lib.test.ts", "name": "spin ends" }, "expect": "spin-ends" },
+    { "id": "zero-tests", "row": "self", "file": "src/lib.ts", "find": "  if (n > max) return max;\n", "replace": "", "why": "no test has this name", "test": { "file": "test/lib.test.ts", "name": "clamp caps" }, "expect": "clamp-cap" },
+    { "id": "wrong-message", "row": "self", "file": "src/lib.ts", "find": "  if (n > max) return max;\n", "replace": "", "why": "fails, but not with the named assertion", "test": { "file": "test/lib.test.ts", "name": "clamp caps at max" }, "expect": "some-other-message" }
+  ],
+  "retired": [{ "id": "old", "reason": "fixture: shows a retired entry is listed" }]
+}
