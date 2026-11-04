@@ -120,7 +120,7 @@ export function validateOp(body: string): { ok: true; record: Op | OpResult } | 
   }
   if (r.stage !== "op_result") return no("no valid stage");
   const keys = ["v", "grant", "stage", "job", "run", "op", "outcome", ...(r.outcome === "done" ? ["answer_sha256"] : ["why"])];
-  if (!Object.hasOwn(RESULT_WHY, String(r.outcome))) return no("no valid outcome");
+  if (typeof r.outcome !== "string" || !Object.hasOwn(RESULT_WHY, r.outcome)) return no("no valid outcome"); // a string, never coerced (Codex r1 #1)
   if (!exactly(r, keys)) return no("result has the wrong fields for its outcome");
   if (typeof r.op !== "string" || !SHA.test(r.op)) return no("no valid op hash");
   if (r.outcome === "done" ? typeof r.answer_sha256 !== "string" || !SHA.test(r.answer_sha256) : !RESULT_WHY[r.outcome as string].includes(r.why as string)) return no("no valid why or answer hash");

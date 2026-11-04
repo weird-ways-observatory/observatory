@@ -101,6 +101,8 @@ test("W7/X3: op and op_result take exact fields; result codes are pinned per out
   assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome: "refused", why: "budget_spent" })).ok, true);
   assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome: "refused", why: "provider_timeout" })).ok, false);
   assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome: "released", why: "stopped" })).ok, false);
+  // Codex r1 #1: the outcome is a string, never coerced: ["refused"] is not "refused".
+  for (const outcome of [["refused"], { toString: null }, 1, null]) assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome, why: "budget_spent" })).ok, false, JSON.stringify(outcome));
 });
 
 test("row 19 (V1, V9a): the live recorder, unchanged, refuses op and op_result with 400", async () => {
@@ -147,9 +149,14 @@ test("row 9 (V7.4): a mismatched approval never counts: not for a run, and not f
   const tap = await w.put("grant-0001", "request", { job: "cf.token.canary" }, NOW - 2 * HOUR);
   await w.put("grant-0001", "approval", { job: "cf.token.canary", request: "f".repeat(64) }, NOW - 2 * HOUR + MIN);
   await w.put("grant-0001", "result", { job: "cf.token.canary", request: tap.sha }, NOW - 2 * HOUR + 2 * MIN);
+  // An approval naming the run's own request hash but another job: only the order check refuses it.
+  const r2 = await openRun(w, NOW - 2 * HOUR, { approve: false, grant: "runopen-0002" });
+  await w.put("runopen-0002", "approval", { job: "cf.token.canary", request: r2 }, NOW - 2 * HOUR + MIN);
+  await w.put("op-0000000002", "op", opRec(r2, { run_grant: "runopen-0002" }), NOW - 2 * HOUR + 2 * MIN);
   await w.run(NOW);
   const ids = w.ids();
-  assert.ok(ids.includes(`mismatch:${RG}`) && ids.includes("mismatch:grant-0001"));
+  assert.ok(ids.includes(`mismatch:${RG}`) && ids.includes("mismatch:grant-0001") && ids.includes("mismatch:runopen-0002"));
+  assert.match(w.incidents().find((i) => i.id === "op-uncovered:op-0000000002")!.text, /no approval/);
   assert.match(w.incidents().find((i) => i.id === `op-uncovered:${OP}`)!.text, /no approval/);
   assert.ok(ids.includes("unapproved:grant-0001"), "the result is unapproved: the mismatched approval did not count");
 });
@@ -345,4 +352,37 @@ test("row 18 (W6): a state from before A loads with empty run-op state and raise
   assert.deepEqual(w.ids().filter((i) => !i.startsWith("lock")), []);
   assert.equal(r.ops.ops_open, 0);
   assert.ok(r.ops.bytes.written > 0);
+});
+
+test("Codex r1 #2: tap reservation ages are signed time: a request stored 9 minutes late still frees its slots 24 h after it was recorded", async () => {
+  const w = await world();
+  const t = NOW - DAY - 5 * MIN; // recorded 24 h 5 min ago, uploaded 23 h 56 min ago
+  await w.put("grant-0001", "request", { job: "cf.token.canary" }, t, 9 * MIN);
+  const r = await w.run(NOW);
+  assert.equal(r.ops.pools_today.tap, 0);
+});
+
+test("Codex r1 #3: over 400 op records in a UTC day is cap:op, and the tap pool is untouched", async () => {
+  const w = await world();
+  const t = NOW - 2 * HOUR;
+  await w.put("grant-0001", "request", { job: "cf.token.canary" }, t);
+  for (let i = 0; i <= OP_DAY_CAP; i++) await w.put(`op-${String(i).padStart(10, "0")}`, "op", opRec("e".repeat(64)), t + MIN + i * 10);
+  const r = await w.run(NOW);
+  // 401 unlinked ops outrank it on the 200-entry list, so it may sit in the overflow set the "more" line counts.
+  const st = JSON.parse(w.copy.store.get(STATE_KEY)!.body), all = [...w.ids(), ...st.dropped];
+  assert.ok(all.includes("cap:op:2026-11-05"));
+  assert.ok(!all.some((i: string) => /^cap:\d/.test(i)), "no tap cap finding");
+  assert.equal(r.ops.pools_today.tap, 4);
+});
+
+test("Codex r1 #4: a watermark stalled over 7 days lets run-op state go as unsettled, never as incomplete", async () => {
+  const w = await world();
+  const t = NOW - 8 * DAY - HOUR, req = await openRun(w, t);
+  await w.put(OP, "op", opRec(req), t + 2 * MIN);
+  w.b.store.set(`records/v1/000000999999.grant-0009.request.json`, { body: "x", uploaded: new Date(NOW) }); // holds the watermark
+  let r = await w.run(t + HOUR);
+  assert.equal(r.ops.ops_open, 1);
+  r = await w.run(NOW);
+  assert.deepEqual([r.ops.ops_open, r.ops.runs_open], [0, 0]);
+  assert.ok(w.ids().includes("op-unsettled:1") && !has(w.ids(), "op-incomplete").length);
 });

@@ -14,6 +14,10 @@ import type { Finding } from "./records.ts";
  */
 export const fp = async (id: string) => `#${(await sha256(id)).slice(0, 16)}`;
 
+const DAY_MS = 86_400_000;
+/** How long run-op state waits for the watermark before it is let go (Codex r1 #4): a week of stalled reads. */
+export const HOLD_MS = 7 * DAY_MS;
+
 interface Run extends RunSeen { at: number; first?: number; last?: number }
 interface Waiting { seq: number; sha: string; run: string; job: string; at: number }
 /** Kept in the checker's saved state under `ops`; every field defaults empty for a state from before A. */
@@ -28,6 +32,7 @@ export interface OpsState {
   first?: string; // the first UTC day this checker counted bytes: no runway alert for 7 full days after
   kinds: { tap: number; op: number }; // written bytes by kind
   incomplete: number; resolved: number; delay_max: number;
+  unsettled: number; // ops let go unsettled because the watermark stalled past HOLD_MS (never called incomplete)
 }
 const bare = <T>(o: unknown): Record<string, T> => Object.assign(Object.create(null), o && typeof o === "object" ? o : {});
 const num = (v: unknown) => (Number.isFinite(v) ? (v as number) : 0);
@@ -37,7 +42,7 @@ export function loadOps(x: unknown): OpsState {
   return {
     runs: bare(o.runs), open: bare(o.open), seen: bare(o.seen), through: Number.isFinite(o.through) ? o.through : undefined,
     days: bare(o.days), written: num(o.written), bytes: bare(o.bytes), first: typeof o.first === "string" ? o.first : undefined,
-    kinds: { tap: num(o.kinds?.tap), op: num(o.kinds?.op) }, incomplete: num(o.incomplete), resolved: num(o.resolved), delay_max: num(o.delay_max),
+    kinds: { tap: num(o.kinds?.tap), op: num(o.kinds?.op) }, incomplete: num(o.incomplete), resolved: num(o.resolved), delay_max: num(o.delay_max), unsettled: num(o.unsettled),
   };
 }
 
@@ -101,9 +106,16 @@ export async function onResult(s: OpsState, seq: number, r: OpResult, at: number
  */
 export async function settle(s: OpsState, now: number, complete: boolean): Promise<Finding[]> {
   if (complete) s.through = Math.max(s.through ?? 0, now - SKEW_MS);
-  const through = s.through;
-  if (through === undefined) return [];
   const out: Finding[] = [];
+  // A watermark held back (a planted higher number, a stuck read) must not hold state forever (Codex r1 #4):
+  // past HOLD_MS, open ops are let go and counted as unsettled, never as incomplete, and the rest is pruned.
+  const hold = now - HOLD_MS;
+  for (const [id, o] of Object.entries(s.open)) if (o.at < hold && (s.through ?? 0) <= o.at + RESULT_MS) delete s.open[id], s.unsettled++;
+  for (const [id, x] of Object.entries(s.seen)) if (x.until < hold && !Object.hasOwn(s.open, id)) delete s.seen[id];
+  for (const [g, r] of Object.entries(s.runs)) if (r.at + RUN_MAX_MS < hold) delete s.runs[g];
+  if (s.unsettled) out.push({ id: `op-unsettled:${s.unsettled}`, text: `${s.unsettled} run op${s.unsettled === 1 ? "" : "s"} could not be settled: the records check has not finished a complete read for over 7 days` });
+  const through = s.through;
+  if (through === undefined) return out;
   for (const [id, o] of Object.entries(s.open)) {
     if (o.at + RESULT_MS >= through) continue;
     out.push({ id: `op-incomplete:${id}`, text: `run op ${await fp(id)} (record ${o.seq}) has no result 24 hours after it was recorded` });
@@ -119,7 +131,6 @@ export async function settle(s: OpsState, now: number, complete: boolean): Promi
   return out;
 }
 
-const DAY_MS = 86_400_000;
 const level = (used: number, cap: number) => (used >= 0.9 * cap ? 90 : used >= 0.8 * cap ? 80 : 0);
 const GiB = (b: number) => (b / 1024 ** 3).toFixed(2);
 

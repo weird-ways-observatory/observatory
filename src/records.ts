@@ -66,14 +66,14 @@ const pad = (n: number) => String(n).padStart(12, "0");
 // How a grant id appears in alerts (runcheck.ts fp): a fingerprint, never the id. Grant findings also name the record number.
 export { fp };
 // Worst first: what ran unrecorded or unchecked before what is merely malformed.
-const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
+const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "op-unsettled", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
 const LOW = RANK.indexOf("junk"); // junk and stray: cheap for a writer to make by the thousand
 const kind = (id: string) => id.split(":")[0];
 const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 ? RANK.length : i; };
 // Kinds a full run computes afresh (`sweep`: carried hourly from the last daily count): they leave
 // the list when a full run no longer finds them. Every other kind is about a record read once and
 // locked for 400 days, so it stays listed.
-const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep", "unreadable", "pool", "capacity", "runway"]);
+const RECHECKED = new Set(["lock", "stray", "gap", "cap", "backlog", "sweep", "unreadable", "pool", "capacity", "runway", "op-unsettled"]);
 const isFinding = <T>(f: T): f is T & Finding => typeof (f as Finding)?.id === "string" && typeof (f as Finding)?.text === "string";
 
 /** Checks one stored record on its own: its envelope against its name and R2's upload time, then the writer's body. */
@@ -404,7 +404,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
               const job = (g: string) => (Object.hasOwn(open, g) ? open[g].job : undefined);
               findings.push(...(stage === "op" ? await onOp(ops, next, r.record as unknown as Op, r.env!.sha256, t, job, opsFrom) : await onResult(ops, next, r.record as unknown as OpResult, t)));
             } else {
-              const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, o.uploaded.getTime(), next, shown);
+              // Signed time, so tap reservation ages match the recorder (W1; Codex r1 #2).
+              const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, Date.parse(r.env!.recorded_at), next, shown);
               if (f) findings.push(f);
               else if (stage === "request") onRequest(ops, grant, next, r.env!.sha256, r.job!, r.record!, Date.parse(r.env!.recorded_at));
               else if (stage === "approval") onApproval(ops, grant, r.request);
