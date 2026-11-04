@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 const REPORTER = fileURLToPath(new URL("./mutants-reporter.mjs", import.meta.url));
 const SKIP = new Set([".git", "node_modules", ".wrangler"]);
 
+/** Reads the command-line options; paths resolve against --root (default: the current directory). */
 export function parseArgs(argv) {
   const o = { root: process.cwd(), list: undefined, modules: undefined, timeout: 60_000, only: undefined };
   for (let i = 0; i < argv.length; i += 2) {
@@ -49,6 +50,7 @@ export function loadList(path) {
   return list;
 }
 
+/** A throwaway copy of the project (no .git, no build output) with the real packages linked in. */
 function freshCopy(o) {
   const dir = mkdtempSync(join(tmpdir(), "mutant-"));
   cpSync(o.root, dir, { recursive: true, filter: (src) => !SKIP.has(basename(src)) });
@@ -56,6 +58,7 @@ function freshCopy(o) {
   return dir;
 }
 
+/** Escapes a test name so --test-name-pattern matches it literally. */
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Runs one named test alone; returns the finished-test events, or why the run itself went wrong. */
@@ -111,6 +114,7 @@ export function runMutant(o, m) {
   }
 }
 
+/** Runs the selected mutants, prints one line each, and returns the exit code (0 only if all are caught). */
 export function main(argv) {
   const o = parseArgs(argv);
   const list = loadList(o.list);
