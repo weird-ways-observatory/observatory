@@ -78,12 +78,15 @@ const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Runs one named test alone; returns the finished-test events and exit status, or why the run went wrong. */
 function runTest(dir, test, timeout) {
+  // Under a parent test runner node sets NODE_TEST_CONTEXT, and a child run then reports to that parent
+  // instead of our reporter (seen as "0 tests ran"); the child must run as a top-level test run.
+  const { NODE_TEST_CONTEXT: _, ...env } = process.env;
   // The reporter writes to its own file: in-process, the code under test shares stdout (records.ts logs JSON).
   const out = join(dir, ".mutants-events.jsonl");
   rmSync(out, { force: true });
   const args = ["--test", "--experimental-test-isolation=none", `--test-reporter=${REPORTER}`, `--test-reporter-destination=${out}`, `--test-name-pattern=^${escape(test.name)}$`, test.file];
   const r = spawnSync(process.execPath, args, {
-    cwd: dir, encoding: "utf8", timeout, killSignal: "SIGKILL",
+    cwd: dir, env, encoding: "utf8", timeout, killSignal: "SIGKILL",
   });
   if (r.error?.code === "ETIMEDOUT") return { why: `timeout after ${timeout} ms` };
   if (r.signal) return { why: `killed by ${r.signal}` };
