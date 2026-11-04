@@ -766,6 +766,19 @@
         "name": "fixture mutant escape-path"
       },
       "expect": "fixture escape-path output"
+    },
+    {
+      "id": "harness-own-event-file",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": " `--test-reporter-destination=${out}`,",
+      "replace": "",
+      "why": "harness rule (card 0d001fc3): test output on stdout must never be read as test events",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant noisy-stdout"
+      },
+      "expect": "fixture noisy-stdout output"
     }
   ],
   "retired": []

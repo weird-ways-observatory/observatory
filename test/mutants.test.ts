@@ -36,6 +36,7 @@ describe("mutation harness", { concurrency: true }, () => {
     ["self-kill", 1, /^INVALID self-kill .*killed by SIGKILL$/m],
     ["escape-path", 1, /^INVALID escape-path .*mutated file is outside the project or in node_modules$/m],
     ["nested-kill", 0, /^CAUGHT nested-kill \[self\]: "target" failed: clamp-cap$/m],
+    ["noisy-stdout", 0, /^CAUGHT noisy-stdout \[self\]: "target" failed: clamp-cap$/m],
   ];
   for (const [id, code, line] of cases)
     test(`fixture mutant ${id}`, () => {
@@ -46,7 +47,7 @@ describe("mutation harness", { concurrency: true }, () => {
 
   test("a whole run fails when any mutant is not caught, and lists retired entries", () => {
     const r = run();
-    assert.match(r.out, /^2\/18 caught; 16 not caught -- run FAILS$/m, r.out);
+    assert.match(r.out, /^3\/19 caught; 16 not caught -- run FAILS$/m, r.out);
     assert.match(r.out, /^RETIRED old: fixture: shows a retired entry is listed$/m, r.out);
     assert.equal(r.code, 1);
   });

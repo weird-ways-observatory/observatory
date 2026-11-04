@@ -233,6 +233,19 @@
         "name": "clamp caps at max"
       },
       "expect": "clamp-cap"
+    },
+    {
+      "id": "noisy-stdout",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "why": "the test prints a JSON line that looks like an event",
+      "test": {
+        "file": "test/noisy.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
     }
   ],
   "retired": [

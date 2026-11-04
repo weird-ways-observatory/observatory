@@ -17,7 +17,7 @@
 //
 // Usage: node scripts/mutants.mjs [--root DIR] [--list FILE] [--modules DIR] [--timeout MS] [--only ID]
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,13 +81,16 @@ function runTest(dir, test, timeout) {
   // Under a parent test runner node sets NODE_TEST_CONTEXT, and a child run then reports to that parent
   // instead of our reporter (seen as "0 tests ran"); the child must run as a top-level test run.
   const { NODE_TEST_CONTEXT: _, ...env } = process.env;
-  const args = ["--test", "--experimental-test-isolation=none", `--test-reporter=${REPORTER}`, `--test-name-pattern=^${escape(test.name)}$`, test.file];
+  // The reporter writes to its own file: in-process, the code under test shares stdout (records.ts logs JSON).
+  const out = join(dir, ".mutants-events.jsonl");
+  rmSync(out, { force: true });
+  const args = ["--test", "--experimental-test-isolation=none", `--test-reporter=${REPORTER}`, `--test-reporter-destination=${out}`, `--test-name-pattern=^${escape(test.name)}$`, test.file];
   const r = spawnSync(process.execPath, args, {
     cwd: dir, env, encoding: "utf8", timeout, killSignal: "SIGKILL",
   });
   if (r.error?.code === "ETIMEDOUT") return { why: `timeout after ${timeout} ms` };
   if (r.signal) return { why: `killed by ${r.signal}` };
-  const events = r.stdout.split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+  const events = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
   return { events, status: r.status };
 }
 
