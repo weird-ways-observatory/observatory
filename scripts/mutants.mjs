@@ -10,9 +10,11 @@
 //      (failureType testCodeFailure, not a hook) with an AssertionError whose message contains `expect`; no
 //      suite failed except because of it; and the run exited 1 without a signal.
 // The test file runs directly (`node FILE`, node:test running in that one process, no --test runner): a module
-// that throws, even after registering tests, exits non-zero with no events; a kill, SIGTERM or SIGINT ends the
-// process and is seen as a signal; no test worker exists to outlive a timeout (Codex B0 r1 #3, #6; r2). Tests that
-// start their own processes must bound them themselves (test/mutants.test.ts does).
+// that throws while it loads, even after registering tests, exits non-zero with no events; a kill, SIGTERM or
+// SIGINT ends the process and is seen as a signal; no test worker exists to outlive a timeout (Codex B0 r1 #3, #6;
+// r2). Limits, by design (Codex B0 r3): an error the module throws after an awaited test has already reported is
+// not seen -- the kill still stands, since that test's own assertion failed; and tests that start their own
+// processes must bound them themselves (test/mutants.test.ts does).
 // Anything else -- missing or duplicate anchor, compile error, a non-assertion throw, a hook failure, a skip,
 // a module that fails to load, a signal, a timeout, zero or extra tests -- FAILS the run as INVALID, and a test
 // that still passes is SURVIVED. The run exits 0 only when every listed mutant is CAUGHT.

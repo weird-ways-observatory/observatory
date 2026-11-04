@@ -43,6 +43,8 @@ describe("mutation harness", { concurrency: true }, () => {
     ["self-term", 1, /^INVALID self-term .*killed by SIGTERM$/m],
     ["self-int", 1, /^INVALID self-int .*killed by SIGINT$/m],
     ["noisy-stdout", 0, /^CAUGHT noisy-stdout \[self\]: "target" failed: clamp-cap$/m],
+    // Codex B0 r3: a stated limit, not a gap -- the kill is genuine; the later module error is not seen.
+    ["async-late", 0, /^CAUGHT async-late \[self\]: "target" failed: clamp-cap$/m],
   ];
   for (const [id, code, line] of cases)
     test(`fixture mutant ${id}`, () => {
@@ -53,7 +55,7 @@ describe("mutation harness", { concurrency: true }, () => {
 
   test("a whole run fails when any mutant is not caught, and lists retired entries", () => {
     const r = run();
-    assert.match(r.out, /^3\/22 caught; 19 not caught -- run FAILS$/m, r.out);
+    assert.match(r.out, /^4\/23 caught; 19 not caught -- run FAILS$/m, r.out);
     assert.match(r.out, /^RETIRED old: fixture: shows a retired entry is listed$/m, r.out);
     assert.equal(r.code, 1);
   });

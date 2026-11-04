@@ -285,6 +285,19 @@
         "file": "test/sig-sigint.test.ts",
         "name": "target"
       }
+    },
+    {
+      "id": "async-late",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "stated limit: the named test fails genuinely, then the module throws after an awaited test",
+      "test": {
+        "file": "test/asyncload.test.ts",
+        "name": "target"
+      }
     }
   ],
   "retired": [
