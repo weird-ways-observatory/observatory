@@ -10,7 +10,10 @@ import { describe, test } from "node:test";
 
 const run = (...args: string[]) => runIn("test/fixtures/mutants", ...args);
 const runIn = (root: string, ...args: string[]) => {
-  const r = spawnSync(process.execPath, ["scripts/mutants.mjs", "--root", root, "--modules", `${process.cwd()}/node_modules`, "--timeout", "4000", ...args], { encoding: "utf8" });
+  // Always as if under a parent test runner (node sets NODE_TEST_CONTEXT there), so the harness's handling of it
+  // is exercised the same way under npm test and under the harness's own in-process runs.
+  const env = { ...process.env, NODE_TEST_CONTEXT: "child-v8" };
+  const r = spawnSync(process.execPath, ["scripts/mutants.mjs", "--root", root, "--modules", `${process.cwd()}/node_modules`, "--timeout", "4000", ...args], { encoding: "utf8", env });
   return { code: r.status, out: r.stdout + r.stderr };
 };
 const one = (id: string) => run("--only", id);
