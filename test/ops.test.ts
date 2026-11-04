@@ -364,7 +364,8 @@ test("row 18 (W6): a state from before A loads with empty run-op state and raise
   const w = await world();
   await w.put("grant-0001", "request", { job: "cf.token.canary" }, NOW - HOUR);
   await w.copy.put(STATE_KEY, JSON.stringify({ seq: 0, open: {}, days: {}, incidents: [] }));
-  assert.equal(typeof loadOps({ seq: 0, open: {}, days: {}, incidents: [] }).runs, "object", "pre-A state loads empty runs");
+  const runs = loadOps({ seq: 0, open: {}, days: {}, incidents: [] }).runs;
+  assert.ok(runs !== null && typeof runs === "object" && Object.keys(runs).length === 0, "pre-A state loads empty runs");
   const r = await w.run(NOW);
   assert.equal(r.records, "ran");
   assert.deepEqual(w.ids().filter((i) => !i.startsWith("lock")), []);

@@ -1,19 +1,25 @@
 // Mutation harness (card 0d001fc3; studio-os REFINE-observatory-ops.md Z2). Each mutant in the list removes
 // or weakens one named safeguard and names the ONE test that must catch it, with the assertion message that
 // test must fail with. A mutant counts as CAUGHT only when all of these hold:
-//   1. its `find` text occurs exactly once in its file;
-//   2. on a fresh copy, the unmutated designated test runs alone and passes (per-mutant baseline);
-//   3. the mutated copy passes tsc;
-//   4. exactly the designated test ran, and it failed with an AssertionError whose message contains `expect`.
-// Anything else -- missing or duplicate anchor, compile error, a non-assertion throw, a module that fails to
-// load, a signal, a timeout, zero or extra tests -- FAILS the run as INVALID, and a test that still passes is
-// SURVIVED. The run exits 0 only when every listed mutant is CAUGHT.
+//   1. the copy holds no symlink, and the mutated file and test file lie inside it (never node_modules);
+//   2. its `find` text occurs exactly once in its file;
+//   3. on that fresh copy, the unmutated designated test runs alone, not skipped, and passes, and the run
+//      exits 0 (per-mutant baseline);
+//   4. the mutated copy passes tsc;
+//   5. exactly the designated test (that name, defined in that file) ran, not skipped, and its own body failed
+//      (failureType testCodeFailure, not a hook) with an AssertionError whose message contains `expect`; no
+//      suite failed except because of it; and the run exited 1 without a signal.
+// Tests run in the runner's own process (--experimental-test-isolation=none), so a kill or timeout ends the
+// whole run and is seen as a signal, and no worker outlives it (Codex B0 r1 #3, #6).
+// Anything else -- missing or duplicate anchor, compile error, a non-assertion throw, a hook failure, a skip,
+// a module that fails to load, a signal, a timeout, zero or extra tests -- FAILS the run as INVALID, and a test
+// that still passes is SURVIVED. The run exits 0 only when every listed mutant is CAUGHT.
 //
 // Usage: node scripts/mutants.mjs [--root DIR] [--list FILE] [--modules DIR] [--timeout MS] [--only ID]
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPORTER = fileURLToPath(new URL("./mutants-reporter.mjs", import.meta.url));
@@ -50,61 +56,81 @@ export function loadList(path) {
   return list;
 }
 
-/** A throwaway copy of the project (no .git, no build output) with the real packages linked in. */
+/** A throwaway copy of the project (no .git, no build output) with the real packages linked in. Refuses a
+ *  project holding any symlink: copied, it would still point at the original files (Codex B0 r1 #5). */
 function freshCopy(o) {
   const dir = mkdtempSync(join(tmpdir(), "mutant-"));
   cpSync(o.root, dir, { recursive: true, filter: (src) => !SKIP.has(basename(src)) });
+  const link = readdirSync(dir, { recursive: true, withFileTypes: true }).find((d) => d.isSymbolicLink());
+  if (link) return { dir, why: `project holds a symlink (${relative(dir, join(link.parentPath, link.name))})` };
   symlinkSync(o.modules, join(dir, "node_modules"), "dir");
-  return dir;
+  return { dir };
+}
+
+/** The path of a project file inside the copy, or undefined when it would leave the copy or enter node_modules. */
+function inside(dir, file) {
+  const abs = resolve(dir, file), rel = relative(dir, abs);
+  return rel && !rel.startsWith("..") && !rel.startsWith(sep) && rel.split(sep)[0] !== "node_modules" ? abs : undefined;
 }
 
 /** Escapes a test name so --test-name-pattern matches it literally. */
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Runs one named test alone; returns the finished-test events, or why the run itself went wrong. */
+/** Runs one named test alone; returns the finished-test events and exit status, or why the run went wrong. */
 function runTest(dir, test, timeout) {
   // Under a parent test runner node sets NODE_TEST_CONTEXT, and a child run then reports to that parent
   // instead of our reporter (seen as "0 tests ran"); the child must run as a top-level test run.
   const { NODE_TEST_CONTEXT: _, ...env } = process.env;
-  const r = spawnSync(process.execPath, ["--test", `--test-reporter=${REPORTER}`, `--test-name-pattern=^${escape(test.name)}$`, test.file], {
+  const args = ["--test", "--experimental-test-isolation=none", `--test-reporter=${REPORTER}`, `--test-name-pattern=^${escape(test.name)}$`, test.file];
+  const r = spawnSync(process.execPath, args, {
     cwd: dir, env, encoding: "utf8", timeout, killSignal: "SIGKILL",
   });
-  if (r.error?.code === "ETIMEDOUT" || r.signal) return { why: r.signal ? `killed by ${r.signal} (timeout ${timeout} ms)` : "timeout" };
-  const events = r.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  return { events };
+  if (r.error?.code === "ETIMEDOUT") return { why: `timeout after ${timeout} ms` };
+  if (r.signal) return { why: `killed by ${r.signal}` };
+  const events = r.stdout.split("\n").filter((l) => l.startsWith("{")).map((l) => JSON.parse(l));
+  return { events, status: r.status };
 }
 
-/** Exactly the designated test finished, once, and nothing else did (a passing file-level wrapper aside,
- *  which node reports under the file's own path when no test in it was selected). */
-function only(events, test) {
-  const name = test.name;
-  const mine = events.filter((e) => e.name === name);
-  const other = events.filter((e) => e.name !== name && !(e.ok && e.name === test.file));
-  if (other.length) return { why: `other test ${JSON.stringify(other[0].name)} finished (${other[0].ok ? "pass" : other[0].error?.name ?? "fail"})` };
-  if (mine.length !== 1) return { why: `${mine.length} tests named ${JSON.stringify(name)} ran` };
+/** Exactly the designated test (that name, defined in that file) finished, once, not skipped, and nothing else
+ *  did. A suite may finish too, but only passing or failed because of its subtests (Codex B0 r1 #1-#4). */
+function only(events, test, file) {
+  const mine = events.filter((e) => e.type === "test" && e.name === test.name && e.file === file);
+  const other = events.filter((e) => !mine.includes(e) && !(e.type === "suite" && (e.ok || e.failureType === "subtestsFailed")));
+  if (other.length) {
+    const x = other[0], where = x.file === file ? "" : ` in ${x.file ? relative(resolve(file, ".."), x.file) : "no file"}`;
+    return { why: `other ${x.type ?? "event"} ${JSON.stringify(x.name)}${where} finished (${x.ok ? "pass" : x.failureType ?? "fail"})` };
+  }
+  if (mine.length !== 1) return { why: `${mine.length} tests named ${JSON.stringify(test.name)} ran in ${test.file}` };
+  if (mine[0].skip || mine[0].todo) return { why: `${JSON.stringify(test.name)} was ${mine[0].skip ? "skipped" : "todo"}, not run` };
   return { event: mine[0] };
 }
 
 /** One mutant's outcome: { verdict: "CAUGHT" | "SURVIVED" | "INVALID", why }. */
 export function runMutant(o, m) {
-  const dir = freshCopy(o);
+  const { dir, why } = freshCopy(o);
   try {
-    const path = join(dir, m.file), src = readFileSync(path, "utf8");
+    if (why) return { verdict: "INVALID", why };
+    const path = inside(dir, m.file), file = inside(dir, m.test.file);
+    if (!path || !file) return { verdict: "INVALID", why: `${path ? "test file" : "mutated file"} is outside the project or in node_modules` };
+    const src = readFileSync(path, "utf8");
     const count = src.split(m.find).length - 1;
     if (count !== 1) return { verdict: "INVALID", why: `anchor occurs ${count} times in ${m.file}` };
     const base = runTest(dir, m.test, o.timeout);
     if (base.why) return { verdict: "INVALID", why: `baseline: ${base.why}` };
-    const b = only(base.events, m.test);
+    const b = only(base.events, m.test, file);
     if (b.why) return { verdict: "INVALID", why: `baseline: ${b.why}` };
     if (!b.event.ok) return { verdict: "INVALID", why: `baseline: designated test fails unmutated (${b.event.error?.message?.split("\n")[0]})` };
+    if (base.status !== 0) return { verdict: "INVALID", why: `baseline: run exited ${base.status}` };
     writeFileSync(path, src.replace(m.find, () => m.replace));
     const tsc = spawnSync(join(o.modules, ".bin", "tsc"), ["-p", join(dir, "tsconfig.json")], { cwd: dir, encoding: "utf8", timeout: o.timeout });
     if (tsc.status !== 0) return { verdict: "INVALID", why: `mutant does not typecheck: ${(tsc.stdout + tsc.stderr).trim().split("\n")[0]}` };
     const run = runTest(dir, m.test, o.timeout);
     if (run.why) return { verdict: "INVALID", why: run.why };
-    const t = only(run.events, m.test);
+    const t = only(run.events, m.test, file);
     if (t.why) return { verdict: "INVALID", why: t.why };
-    if (t.event.ok) return { verdict: "SURVIVED", why: `${JSON.stringify(m.test.name)} still passes` };
+    if (t.event.ok) return run.status === 0 ? { verdict: "SURVIVED", why: `${JSON.stringify(m.test.name)} still passes` } : { verdict: "INVALID", why: `run exited ${run.status}` };
+    if (run.status !== 1) return { verdict: "INVALID", why: `run exited ${run.status}, not 1` };
+    if (t.event.failureType !== "testCodeFailure") return { verdict: "INVALID", why: `failed in ${t.event.failureType ?? "an unknown place"}, not in the test's own body` };
     const e = t.event.error;
     if (e?.name !== "AssertionError" || e?.code !== "ERR_ASSERTION") return { verdict: "INVALID", why: `failed with ${e?.name ?? "no error"}, not an assertion: ${e?.message?.split("\n")[0]}` };
     if (!e.message.includes(m.expect)) return { verdict: "INVALID", why: `assertion message does not contain ${JSON.stringify(m.expect)}: ${e.message.split("\n")[0]}` };

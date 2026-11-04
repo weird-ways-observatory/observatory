@@ -3,10 +3,14 @@
 // Each case runs the real command against the fixture project in test/fixtures/mutants.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 
-const run = (...args: string[]) => {
-  const r = spawnSync(process.execPath, ["scripts/mutants.mjs", "--root", "test/fixtures/mutants", "--modules", `${process.cwd()}/node_modules`, "--timeout", "4000", ...args], { encoding: "utf8" });
+const run = (...args: string[]) => runIn("test/fixtures/mutants", ...args);
+const runIn = (root: string, ...args: string[]) => {
+  const r = spawnSync(process.execPath, ["scripts/mutants.mjs", "--root", root, "--modules", `${process.cwd()}/node_modules`, "--timeout", "4000", ...args], { encoding: "utf8" });
   return { code: r.status, out: r.stdout + r.stderr };
 };
 const one = (id: string) => run("--only", id);
@@ -19,11 +23,19 @@ describe("mutation harness", { concurrency: true }, () => {
     ["duplicate-anchor", 1, /^INVALID duplicate-anchor .*anchor occurs 3 times/m],
     ["compile-error", 1, /^INVALID compile-error .*does not typecheck: .*TS2322/m],
     ["runtime-throw", 1, /^INVALID runtime-throw .*failed with TypeError, not an assertion: boom$/m],
-    ["module-load", 1, /^INVALID module-load .*other test "test\/lib\.test\.ts" finished \(fail\)$/m],
-    ["timeout", 1, /^INVALID timeout .*killed by SIGKILL \(timeout 4000 ms\)$/m],
-    ["zero-tests", 1, /^INVALID zero-tests .*baseline: 0 tests named "clamp caps" ran$/m],
+    ["module-load", 1, /^INVALID module-load .*other test "test\/lib\.test\.ts" in no file finished \(fail\)$/m],
+    ["timeout", 1, /^INVALID timeout .*timeout after 4000 ms$/m],
+    ["zero-tests", 1, /^INVALID zero-tests .*baseline: 0 tests named "clamp caps" ran in test\/lib\.test\.ts$/m],
     ["wrong-message", 1, /^INVALID wrong-message .*does not contain "some-other-message"/m],
     ["baseline-fails", 1, /^INVALID baseline-fails .*baseline: designated test fails unmutated \(broken-baseline\)$/m],
+    // Codex B0 r1 regressions: each of these printed CAUGHT before the fix.
+    ["hook-only", 1, /^INVALID hook-only .*failed in hookFailed, not in the test's own body$/m],
+    ["skipped-baseline", 1, /^INVALID skipped-baseline .*baseline: "target" was skipped, not run$/m],
+    ["suite-hook", 1, /^INVALID suite-hook .*other suite "grp" finished \(hookFailed\)$/m],
+    ["imported-test", 1, /^INVALID imported-test .*other test "clamp caps at max" in lib\.test\.ts finished \(pass\)$/m],
+    ["self-kill", 1, /^INVALID self-kill .*killed by SIGKILL$/m],
+    ["escape-path", 1, /^INVALID escape-path .*mutated file is outside the project or in node_modules$/m],
+    ["nested-kill", 0, /^CAUGHT nested-kill \[self\]: "target" failed: clamp-cap$/m],
   ];
   for (const [id, code, line] of cases)
     test(`fixture mutant ${id}`, () => {
@@ -34,9 +46,28 @@ describe("mutation harness", { concurrency: true }, () => {
 
   test("a whole run fails when any mutant is not caught, and lists retired entries", () => {
     const r = run();
-    assert.match(r.out, /^1\/11 caught; 10 not caught -- run FAILS$/m, r.out);
+    assert.match(r.out, /^2\/18 caught; 16 not caught -- run FAILS$/m, r.out);
     assert.match(r.out, /^RETIRED old: fixture: shows a retired entry is listed$/m, r.out);
     assert.equal(r.code, 1);
+  });
+
+  test("a project holding a symlink is refused, and the file it points at is never written", () => {
+    const root = mkdtempSync(join(tmpdir(), "mutants-selftest-")), away = mkdtempSync(join(tmpdir(), "mutants-away-"));
+    try {
+      cpSync("test/fixtures/mutants", root, { recursive: true });
+      const target = join(away, "outside.ts"), text = "export const v = 1;\n";
+      writeFileSync(target, text);
+      symlinkSync(target, join(root, "src", "link.ts"));
+      const list = { mutants: [{ id: "via-link", row: "self", file: "src/link.ts", find: "v = 1", replace: "v = 2", why: "write through a symlink", test: { file: "test/lib.test.ts", name: "clamp caps at max" }, expect: "clamp-cap" }] };
+      writeFileSync(join(root, "symlink-list.json"), JSON.stringify(list));
+      const r = runIn(root, "--list", "symlink-list.json");
+      assert.match(r.out, /^INVALID via-link \[self\]: project holds a symlink \(src\/link\.ts\)$/m, `symlink output: ${r.out}`);
+      assert.equal(r.code, 1);
+      assert.equal(readFileSync(target, "utf8"), text, "the file behind the symlink is unchanged");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(away, { recursive: true, force: true });
+    }
   });
 
   test("an id that selects nothing fails the run", () => {

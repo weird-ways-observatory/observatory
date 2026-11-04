@@ -142,6 +142,97 @@
         "name": "broken baseline"
       },
       "expect": "broken-baseline"
+    },
+    {
+      "id": "hook-only",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the failing assertion is in a beforeEach hook",
+      "test": {
+        "file": "test/hook.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "skipped-baseline",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the designated test is skipped unmutated",
+      "test": {
+        "file": "test/skip.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "suite-hook",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the suite's after hook also fails",
+      "test": {
+        "file": "test/suite.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "nested-kill",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "a genuine kill inside describe() counts",
+      "test": {
+        "file": "test/nested.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "imported-test",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the named test is defined in another file",
+      "test": {
+        "file": "test/importer.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "self-kill",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the process is killed after the assertion is reported",
+      "test": {
+        "file": "test/signal.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "escape-path",
+      "row": "self",
+      "file": "../outside.ts",
+      "find": "x",
+      "replace": "y",
+      "why": "the mutated file is outside the project",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
     }
   ],
   "retired": [

@@ -628,8 +628,8 @@
       "id": "harness-no-other-tests",
       "row": "B0",
       "file": "scripts/mutants.mjs",
-      "find": "  if (other.length) return",
-      "replace": "  if (false) return",
+      "find": "  if (other.length) {",
+      "replace": "  if (false) {",
       "why": "harness rule (card 0d001fc3): a file-level failure must not pass as the named test",
       "test": {
         "file": "test/mutants.test.ts",
@@ -675,6 +675,97 @@
         "name": "a whole run fails when any mutant is not caught, and lists retired entries"
       },
       "expect": "Expected values to be strictly equal"
+    },
+    {
+      "id": "harness-body-not-hook",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (t.event.failureType !== \"testCodeFailure\") return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a hook's assertion must not count as the test's",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant hook-only"
+      },
+      "expect": "fixture hook-only output"
+    },
+    {
+      "id": "harness-not-skipped",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (mine[0].skip || mine[0].todo) return",
+      "replace": "  if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a skipped baseline must not count as passing",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant skipped-baseline"
+      },
+      "expect": "fixture skipped-baseline output"
+    },
+    {
+      "id": "harness-suite-failures",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "!(e.type === \"suite\" && (e.ok || e.failureType === \"subtestsFailed\"))",
+      "replace": "!(e.type === \"suite\")",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a suite's own failure must not be hidden",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant suite-hook"
+      },
+      "expect": "fixture suite-hook output"
+    },
+    {
+      "id": "harness-file-identity",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "e.type === \"test\" && e.name === test.name && e.file === file",
+      "replace": "e.type === \"test\" && e.name === test.name",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): the named test must be defined in the named file",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant imported-test"
+      },
+      "expect": "fixture imported-test output"
+    },
+    {
+      "id": "harness-signal",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (r.signal) return { why: `killed by ${r.signal}` };\n",
+      "replace": "",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a killed run must not count",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant self-kill"
+      },
+      "expect": "fixture self-kill output"
+    },
+    {
+      "id": "harness-no-symlinks",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (link) return",
+      "replace": "  if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a project holding a symlink must be refused",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "a project holding a symlink is refused, and the file it points at is never written"
+      },
+      "expect": "symlink output"
+    },
+    {
+      "id": "harness-inside-project",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (!path || !file) return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a file outside the project must be refused",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant escape-path"
+      },
+      "expect": "fixture escape-path output"
     }
   ],
   "retired": []
