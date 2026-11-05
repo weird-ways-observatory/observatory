@@ -50,7 +50,7 @@
         "file": "test/ops.test.ts",
         "name": "Codex r1 #4: a watermark stalled over 7 days lets run-op state go as unsettled, never as incomplete"
       },
-      "expect": "+ actual - expected"
+      "expect": "stalled watermark: run-op state kept or not let go as unsettled"
     },
     {
       "id": "sec-hold-from-recorded-time-not-first-read",
@@ -76,7 +76,7 @@
         "file": "test/ops.test.ts",
         "name": "Codex r1 #4: a watermark stalled over 7 days lets run-op state go as unsettled, never as incomplete"
       },
-      "expect": "+ actual - expected"
+      "expect": "stalled watermark: run-op state kept or not let go as unsettled"
     },
     {
       "id": "row9-checkorder-records-stage-before-job-check",
@@ -245,7 +245,7 @@
         "file": "test/ops.test.ts",
         "name": "row 6: budget counts unique ops; the one past it is uncovered; a second record for one op is a duplicate, not a unit"
       },
-      "expect": "+ actual - expected"
+      "expect": "the op past the run budget is not uncovered"
     },
     {
       "id": "row6-duplicate-op-counts-a-unit",
@@ -297,7 +297,7 @@
         "file": "test/ops.test.ts",
         "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
       },
-      "expect": "+ actual - expected"
+      "expect": "a re-encoded descriptor is accepted"
     },
     {
       "id": "row3-exact-fields",
@@ -310,7 +310,7 @@
         "file": "test/ops.test.ts",
         "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
       },
-      "expect": "+ actual - expected"
+      "expect": "a descriptor with an extra field is accepted"
     },
     {
       "id": "row4-deadline-cap",
@@ -349,7 +349,7 @@
         "file": "test/ops.test.ts",
         "name": "row 11: the run is remembered when the grant map is full"
       },
-      "expect": "+ actual - expected"
+      "expect": "a run remembered only in the grant map raises op findings"
     },
     {
       "id": "row12-every-run-counts-as-complete",
@@ -388,7 +388,7 @@
         "file": "test/ops.test.ts",
         "name": "row 13: late, mismatched, duplicate and orphan results are findings; only a valid result clears the op"
       },
-      "expect": "The expression evaluated to a falsy value:"
+      "expect": "orphan results are not reported as unlinked"
     },
     {
       "id": "row13-24-h-result-window",
@@ -453,7 +453,7 @@
         "file": "test/ops.test.ts",
         "name": "row 16 (X4): 200 open ops today fill the op pool; one tap request is 4 of the tap pool; neither borrows"
       },
-      "expect": "+ actual - expected"
+      "expect": "poolUse does not count op holds in the op pool"
     },
     {
       "id": "row16-one-shared-pool-day-count",
@@ -466,7 +466,7 @@
         "file": "test/ops.test.ts",
         "name": "row 16 (X4): 200 open ops today fill the op pool; one tap request is 4 of the tap pool; neither borrows"
       },
-      "expect": "+ actual - expected"
+      "expect": "pools_today shares or misses a pool"
     },
     {
       "id": "row17-80-level",
@@ -479,7 +479,7 @@
         "file": "test/ops.test.ts",
         "name": "row 17: storage alerts at 80/90% for the run cutoff and tap capacity; runway only after 7 full days"
       },
-      "expect": "+ actual - expected"
+      "expect": "tap capacity 80% alert missing"
     },
     {
       "id": "row17-runway-waits-7-days",
@@ -492,7 +492,7 @@
         "file": "test/ops.test.ts",
         "name": "row 17: storage alerts at 80/90% for the run cutoff and tap capacity; runway only after 7 full days"
       },
-      "expect": "+ actual - expected"
+      "expect": "runway reported before 7 full days of data"
     },
     {
       "id": "row18-pre-a-state",
@@ -557,7 +557,7 @@
         "file": "test/ops.test.ts",
         "name": "row 1 (commit security review): a reused run-open grant id voids the run; its new approval never approves the old descriptor"
       },
-      "expect": "The expression evaluated to a falsy value:"
+      "expect": "a reused run-open grant id does not void the run"
     },
     {
       "id": "harness-anchor-once",
@@ -779,6 +779,253 @@
         "name": "fixture mutant noisy-stdout"
       },
       "expect": "fixture noisy-stdout output"
+    },
+    {
+      "id": "b1-t11-request-opened-not-synced",
+      "row": "T11",
+      "file": "src/recorder/ledger.ts",
+      "find": "        next = { ...next, opened: t };\n",
+      "replace": "",
+      "why": "B1 (card 509a5d85): a re-timed request keeps its grant's old opening time, so recorder and checker windows differ",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "T11: a request stored 6 min late moves its grant's opening time and its hold to when it was stored"
+      },
+      "expect": "re-timed request kept its old opening time"
+    },
+    {
+      "id": "b1-t11-hold-start-not-synced",
+      "row": "T11",
+      "file": "src/recorder/ledger.ts",
+      "find": "? { ...m, open: m.open.map((o) => (o.grant === receipt.grant ? { ...o, opened: t } : o)) }",
+      "replace": "? m",
+      "why": "B1 (card 509a5d85): a re-timed request keeps its hold's old start",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "T11: a request stored 6 min late moves its grant's opening time and its hold to when it was stored"
+      },
+      "expect": "re-timed request kept its hold's old start"
+    },
+    {
+      "id": "b1-t13-boundary-exclusive",
+      "row": "T13",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (o.left <= 0 || o.grant === keep || t - o.opened <= GRANT_TTL_MS) return true;",
+      "replace": "if (o.left <= 0 || o.grant === keep || t - o.opened < GRANT_TTL_MS) return true;",
+      "why": "B1 (card 509a5d85): the hold ends before 24 h inclusive, unlike the checker's poolUse",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "T13: a hold lasts exactly 24 h, inclusive; at 24 h + 1 ms it is released the same day and counted once"
+      },
+      "expect": "hold released at exactly 24 h"
+    },
+    {
+      "id": "b1-expiry-only-at-rollover",
+      "row": "V6.3",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (o.left <= 0 || o.grant === keep || t - o.opened <= GRANT_TTL_MS) return true;",
+      "replace": "if (o.left <= 0 || o.grant === keep || true) return true;",
+      "why": "B1 (card 509a5d85): holds past 24 h are not released within the day",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "T13: a hold lasts exactly 24 h, inclusive; at 24 h + 1 ms it is released the same day and counted once"
+      },
+      "expect": "hold kept past 24 h"
+    },
+    {
+      "id": "b1-z4-pending-hold-released",
+      "row": "Z4",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (o.left <= 0 || o.grant === keep || t - o.opened <= GRANT_TTL_MS) return true;",
+      "replace": "if (o.left <= 0 || t - o.opened <= GRANT_TTL_MS) return true;",
+      "why": "B1 (card 509a5d85): status or accept expiry releases the hold of the record that is pending",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "Z4: a request pending 24 h + 1 ms with status reads in between is stored holding 3 from its new time"
+      },
+      "expect": "released the pending record's hold"
+    },
+    {
+      "id": "b1-t15-op-charged-to-tap",
+      "row": "T15",
+      "file": "src/recorder/ledger.ts",
+      "find": "            if (p.pool === \"op\") {",
+      "replace": "            if (p.pool === \"tap\") {",
+      "why": "B1 (card 509a5d85): a pending op re-charged at midnight is charged to the tap pool",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "T15: a pending op stored on a later day is charged to the op pool, never the tap pool"
+      },
+      "expect": "op re-charged to the wrong pool"
+    },
+    {
+      "id": "b1-ae1-late-withdrawal-two-writes",
+      "row": "AE1",
+      "file": "src/recorder/ledger.ts",
+      "find": "  async #withdrawLate(p: Pending, now: number): Promise<void> {\n    await this.storage.transaction(async (txn) => {",
+      "replace": "  async #withdrawLate(p: Pending, now: number): Promise<void> {\n    await ((fn: (t: Txn) => Promise<void>) => fn(this.storage))(async (txn) => {",
+      "why": "B1 (card 509a5d85): the late withdrawal runs its writes straight on storage, not in one transaction",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AE1: a fault inside the late withdrawal changes nothing; the next turn withdraws once"
+      },
+      "expect": "a fault inside the late withdrawal left part of it applied"
+    },
+    {
+      "id": "b1-ae1-late-delete-outside",
+      "row": "AE1",
+      "file": "src/recorder/ledger.ts",
+      "find": "      await txn.delete(\"pending\");\n    });\n  }\n\n  /** The pending record under",
+      "replace": "    });\n    await this.storage.delete(\"pending\");\n  }\n\n  /** The pending record under",
+      "why": "B1 (card 509a5d85): the late withdrawal deletes pending outside its transaction",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AE1: a fault inside the late withdrawal changes nothing; the next turn withdraws once"
+      },
+      "expect": "a fault inside the late withdrawal left part of it applied"
+    },
+    {
+      "id": "b1-ae1-unverified-two-writes",
+      "row": "AE1",
+      "file": "src/recorder/ledger.ts",
+      "find": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await this.storage.transaction(async (txn) => {",
+      "replace": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await ((fn: (t: Txn) => Promise<void>) => fn(this.storage))(async (txn) => {",
+      "why": "B1 (card 509a5d85): the live #withdrawUnverified fix undone: its writes run straight on storage, not in one transaction",
+      "test": {
+        "file": "test/passkey.test.ts",
+        "name": "cutover: a fault inside the withdrawal changes nothing; the next turn withdraws once (REFINE v11 AE1)"
+      },
+      "expect": "a fault inside the withdrawal left part of it applied"
+    },
+    {
+      "id": "b1-ae1-unverified-delete-outside",
+      "row": "AE1",
+      "file": "src/recorder/ledger.ts",
+      "find": "      await txn.delete(\"pending\");\n    });\n    return true;",
+      "replace": "    });\n    await this.storage.delete(\"pending\");\n    return true;",
+      "why": "B1 (card 509a5d85): the live #withdrawUnverified fix undone: pending removed outside the accounting transaction",
+      "test": {
+        "file": "test/passkey.test.ts",
+        "name": "cutover: a fault inside the withdrawal changes nothing; the next turn withdraws once (REFINE v11 AE1)"
+      },
+      "expect": "a fault inside the withdrawal left part of it applied"
+    },
+    {
+      "id": "b1-aa2-late-stage-stored",
+      "row": "AA2",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (late && p.receipt.stage !== \"request\" && t - g.opened > GRANT_TTL_MS) {",
+      "replace": "if (late && p.receipt.stage !== \"request\" && t - g.opened > GRANT_TTL_MS * 2) {",
+      "why": "B1 (card 509a5d85): a later stage re-timed past its grant's 24 h is stored instead of withdrawn",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AA2/AB2: a later stage re-timed 1 ms past its grant's 24 h is withdrawn: number, bytes, charge back; hold released"
+      },
+      "expect": "late stage still on its grant"
+    },
+    {
+      "id": "b1-aa2-later-stage-moves-opening",
+      "row": "AA2",
+      "file": "src/recorder/ledger.ts",
+      "find": "          if (receipt.stage === \"request\") {",
+      "replace": "          if (receipt.stage !== \"result\") {",
+      "why": "B1 (card 509a5d85): a re-timed later stage moves its parent's opening time",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AA2: a verdict stored 6 min late inside its window is stored; its grant's opening time does not move"
+      },
+      "expect": "a later stage moved its parent's opening time"
+    },
+    {
+      "id": "b1-ab2-hold-kept",
+      "row": "AB2",
+      "file": "src/recorder/ledger.ts",
+      "find": "          open: m.open.filter((o) => o.grant !== p.receipt.grant),",
+      "replace": "          open: m.open,",
+      "why": "B1 (card 509a5d85): the late withdrawal keeps the grant's hold instead of releasing it; the next turn's expiry then releases it again, so expired counts it twice",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AA2/AB2: a later stage re-timed 1 ms past its grant's 24 h is withdrawn: number, bytes, charge back; hold released"
+      },
+      "expect": "the released hold was not counted once as expired"
+    },
+    {
+      "id": "b1-ab2-charge-kept",
+      "row": "AB2",
+      "file": "src/recorder/ledger.ts",
+      "find": "          used: m.used - (p.day === m.day ? 1 : 0) - (hold?.left ?? 0),",
+      "replace": "          used: m.used - (hold?.left ?? 0),",
+      "why": "B1 (card 509a5d85): the late withdrawal leaves its own charge on today's pool",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AA2/AB2: a later stage re-timed 1 ms past its grant's 24 h is withdrawn: number, bytes, charge back; hold released"
+      },
+      "expect": "today's tap pool not reconciled"
+    },
+    {
+      "id": "b1-z5-retime-bytes-uncharged",
+      "row": "Z5",
+      "file": "src/recorder/ledger.ts",
+      "find": "          m = { ...m, bytes: m.bytes + len(stored) - len(p.stored) };",
+      "replace": "          m = { ...m };",
+      "why": "B1 (card 509a5d85): re-signing on re-time (including a legacy envelope) is not charged its length change",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "Z5: a legacy unsigned pending record re-timed is charged its new length when signed"
+      },
+      "expect": "stored bytes and the budget count differ after signing a legacy record"
+    },
+    {
+      "id": "b1-z5-legacy-bytes-uncharged",
+      "row": "Z5",
+      "file": "src/recorder/ledger.ts",
+      "find": "meta: { ...m, bytes: m.bytes + len(stored) - len(p.stored) }, pending: (p = ",
+      "replace": "meta: m, pending: (p = ",
+      "why": "B1 (card 509a5d85): signing a legacy envelope (not re-timed) is not charged its length change",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "Z5: a legacy unsigned pending record is charged its new length when signed"
+      },
+      "expect": "stored bytes and the budget count differ after signing a legacy record"
+    },
+    {
+      "id": "b1-z5-status-clock-before-turn",
+      "row": "Z5",
+      "file": "src/recorder/ledger.ts",
+      "find": "  status(at: Date | (() => Date) = () => new Date()) {\n    return this.#serial(async () => {\n      const now = typeof at === \"function\" ? at() : at;",
+      "replace": "  status(at: Date | (() => Date) = () => new Date()) {\n    const now = typeof at === \"function\" ? at() : at;\n    return this.#serial(async () => {",
+      "why": "B1 (card 509a5d85): status reads its clock before its queue turn",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "status reads its clock in its own turn, after the write queued before it (REFINE v6 Z5)"
+      },
+      "expect": "status read the clock before its turn"
+    },
+    {
+      "id": "b1-crossday-unverified-low",
+      "row": "B1 found",
+      "file": "src/recorder/ledger.ts",
+      "find": "used: m.used + (hold ? (p.day === m.day ? 0 : 1) : (p.day === m.day ? -1 : 0)),",
+      "replace": "used: m.used,",
+      "why": "B1 (card 509a5d85): an unverified approval charged yesterday and withdrawn today leaves today's pool one low",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "an unverified approval charged yesterday, withdrawn today, goes back to today's pool (found writing B1)"
+      },
+      "expect": "today's pool reads one low after a cross-day withdrawal"
+    },
+    {
+      "id": "b1-refusal-reasons-merged",
+      "row": "AA3",
+      "file": "src/recorder/ledger.ts",
+      "find": ": out.status === 429 ? (out.why.startsWith(\"the recorder's storage budget\") ? \"budget_full\" : \"tap_pool_full\") : undefined;",
+      "replace": ": out.status === 429 ? \"tap_pool_full\" : undefined;",
+      "why": "B1 (card 509a5d85): a full budget is counted as a pool refusal, hiding AA3's retune trigger",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "a pool refusal is counted as tap_pool_full; a full budget as budget_full"
+      },
+      "expect": "429 reasons not told apart"
     }
   ],
   "retired": []

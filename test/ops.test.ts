@@ -80,9 +80,9 @@ const textOf = (w: W, pick: (id: string) => boolean, what: string) => {
 test("row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50", () => {
   const t = NOW;
   assert.equal(typeof parseDescriptor(desc(t), t), "object");
-  assert.equal(parseDescriptor(JSON.stringify(JSON.parse(desc(t)), null, 1), t), "descriptor is not canonical JSON");
+  assert.equal(parseDescriptor(JSON.stringify(JSON.parse(desc(t)), null, 1), t), "descriptor is not canonical JSON", "a re-encoded descriptor is accepted");
   assert.equal(parseDescriptor(JSON.stringify({ zones: [], ...JSON.parse(desc(t)) }), t), "descriptor is not canonical JSON"); // key order
-  assert.equal(parseDescriptor(desc(t, { extra: 1 }), t), "descriptor has the wrong fields");
+  assert.equal(parseDescriptor(desc(t, { extra: 1 }), t), "descriptor has the wrong fields", "a descriptor with an extra field is accepted");
   assert.match(String(parseDescriptor(desc(t, { deadline: t + 25 * HOUR }), t)), /deadline/);
   assert.match(String(parseDescriptor(desc(t, { deadline: t }), t)), /deadline/);
   assert.match(String(parseDescriptor(desc(t, { budget: 51 }), t)), /budget/);
@@ -215,7 +215,7 @@ test("row 6: budget counts unique ops; the one past it is uncovered; a second re
   await w.run(NOW);
   const ids = w.ids();
   assert.ok(ids.includes("duplicate:o:op-0000000001:op"));
-  assert.deepEqual(has(ids, "op-uncovered"), ["op-uncovered:op-0000000003"]);
+  assert.deepEqual(has(ids, "op-uncovered"), ["op-uncovered:op-0000000003"], "the op past the run budget is not uncovered");
 });
 
 test("row 1 (commit security review): a reused run-open grant id voids the run; its new approval never approves the old descriptor", async () => {
@@ -233,7 +233,7 @@ test("row 1 (commit security review): a reused run-open grant id voids the run; 
   await w.put(OP, "op", opRec(req), t + 5 * MIN);
   await w.put("op-0000000002", "op", opRec(again), t + 6 * MIN);
   await w.run(NOW);
-  assert.ok(w.ids().includes(`op-uncovered:${OP}`) && w.ids().includes("op-uncovered:op-0000000002"));
+  assert.ok(w.ids().includes(`op-uncovered:${OP}`) && w.ids().includes("op-uncovered:op-0000000002"), "a reused run-open grant id does not void the run");
 });
 
 test("row 10: an op id equal to a grant id: each is checked in its own map", async () => {
@@ -257,7 +257,7 @@ test("row 11: the run is remembered when the grant map is full", async () => {
   await w.run(NOW - 2 * HOUR);
   await w.put(OP, "op", opRec(req), NOW - 2 * HOUR + MIN);
   await w.run(NOW);
-  assert.deepEqual(has(w.ids(), "op-"), []);
+  assert.deepEqual(has(w.ids(), "op-"), [], "a run remembered only in the grant map raises op findings");
 });
 
 test("rows 12, 20 (W4, X2): no result after 24 h is incomplete only once a complete read passes it; gaps and higher numbers wait", async () => {
@@ -297,7 +297,7 @@ test("row 13: late, mismatched, duplicate and orphan results are findings; only 
   await w.put("op-dddddddd", "op_result", doneRec(a.sha), t + 8 * MIN);
   await w.run(NOW);
   const ids = w.ids();
-  assert.ok(has(ids, "op-unlinked:op-aaaaaaaa").length && has(ids, "op-unlinked:op-dddddddd").length);
+  assert.ok(has(ids, "op-unlinked:op-aaaaaaaa").length && has(ids, "op-unlinked:op-dddddddd").length, "orphan results are not reported as unlinked");
   assert.ok(ids.includes("duplicate:o:op-bbbbbbbb:op_result"));
   assert.ok(has(ids, "op-late:op-cccccccc").length);
   assert.ok(ids.includes("op-incomplete:op-aaaaaaaa") && ids.includes("op-incomplete:op-cccccccc") && !ids.includes("op-incomplete:op-bbbbbbbb"));
@@ -326,13 +326,13 @@ test("row 15: alert text names ops and runs by fingerprint, never by id, run nam
 });
 
 test("row 16 (X4): 200 open ops today fill the op pool; one tap request is 4 of the tap pool; neither borrows", async () => {
-  assert.deepEqual(poolUse(NOW, { tap: 1, op: 200 }, [{ opened: NOW, stored: 1 }], Array.from({ length: 200 }, () => ({ at: NOW }))), { tap: 4, op: 400, reserved_bytes: 203 * MAX_STORED_BYTES });
+  assert.deepEqual(poolUse(NOW, { tap: 1, op: 200 }, [{ opened: NOW, stored: 1 }], Array.from({ length: 200 }, () => ({ at: NOW }))), { tap: 4, op: 400, reserved_bytes: 203 * MAX_STORED_BYTES }, "poolUse does not count op holds in the op pool");
   assert.equal(poolUse(NOW, { tap: 0, op: 0 }, [{ opened: NOW - DAY - 1, stored: 1 }], [{ at: NOW - DAY - 1 }]).tap, 0, "expired reservations free their slots");
   const w = await world();
   const t = NOW - 30 * MIN, req = await openRun(w, t);
   for (let i = 0; i < 200; i++) await w.put(`op-${String(i).padStart(10, "0")}`, "op", opRec(req, {}), t + 2 * MIN + i * 100);
   const r = await w.run(NOW);
-  assert.deepEqual(r.ops.pools_today, { tap: 4, op: 400 }); // the run-open grant: 2 stored + 2 reserved
+  assert.deepEqual(r.ops.pools_today, { tap: 4, op: 400 }, "pools_today shares or misses a pool"); // the run-open grant: 2 stored + 2 reserved
   assert.ok(w.ids().includes(`pool:op:2026-11-05:90`) && !has(w.ids(), "pool:tap").length);
   assert.equal(OP_DAY_CAP, 400);
 });
@@ -344,7 +344,7 @@ test("row 17: storage alerts at 80/90% for the run cutoff and tap capacity; runw
   const s = loadOps({});
   s.written = 0.79 * GIB1;
   assert.deepEqual(capacityFindings(s, NOW, 0, GIB1).map((f) => f.id), []);
-  assert.deepEqual(capacityFindings(s, NOW, 0.02 * GIB1, GIB1).map((f) => f.id), ["capacity:tap:80"]);
+  assert.deepEqual(capacityFindings(s, NOW, 0.02 * GIB1, GIB1).map((f) => f.id), ["capacity:tap:80"], "tap capacity 80% alert missing");
   s.written = 0.91 * RUN_CUTOFF_BYTES;
   assert.deepEqual(capacityFindings(s, NOW, 0, 6 * 1024 ** 3).map((f) => f.id), ["capacity:run:90"]); // 4.55 of 6 GiB: tap under 80%
   s.written = 0.81 * 6 * 1024 ** 3;
@@ -353,7 +353,7 @@ test("row 17: storage alerts at 80/90% for the run cutoff and tap capacity; runw
   s.written = 0.5 * GIB1;
   s.first = "2026-11-01";
   for (let i = 1; i <= 7; i++) s.bytes[new Date(NOW - i * DAY).toISOString().slice(0, 10)] = 20 * 1024 ** 2;
-  assert.deepEqual(capacityFindings(s, NOW, 0, GIB1).map((f) => f.id), []);
+  assert.deepEqual(capacityFindings(s, NOW, 0, GIB1).map((f) => f.id), [], "runway reported before 7 full days of data");
   s.first = "2026-10-28";
   const f = capacityFindings(s, NOW, 0, GIB1);
   assert.deepEqual(f.map((x) => x.id), ["runway:tap:critical"]);
@@ -404,7 +404,7 @@ test("Codex r1 #4: a watermark stalled over 7 days lets run-op state go as unset
   let r = await w.run(t + HOUR);
   assert.equal(r.ops.ops_open, 1);
   r = await w.run(NOW);
-  assert.deepEqual([r.ops.ops_open, r.ops.runs_open], [0, 0]);
+  assert.deepEqual([r.ops.ops_open, r.ops.runs_open], [0, 0], "stalled watermark: run-op state kept or not let go as unsettled");
   assert.ok(w.ids().includes(`op-unsettled:${OP}`) && !has(w.ids(), "op-incomplete").length);
   assert.ok(!w.incidents().some((i) => i.text.includes(OP)), "named by fingerprint only");
 });

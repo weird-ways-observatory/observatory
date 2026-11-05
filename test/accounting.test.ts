@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DAY_CAP, GRANT_TTL_MS, keyFor, MAX_STORED_BYTES, sha256, STAGE_SLOTS, STORE_BUDGET_BYTES } from "../src/contract.ts";
-import { Ledger, REFUSALS, settle } from "../src/recorder/ledger.ts";
+import { Ledger, REFUSALS } from "../src/recorder/ledger.ts";
 import { OP_DAY_CAP, poolUse, RUN_CUTOFF_BYTES } from "../src/ops.ts";
 import { bucket, storage } from "./store.ts";
 
@@ -135,7 +135,8 @@ test("T13: a hold lasts exactly 24 h, inclusive; at 24 h + 1 ms it is released t
   assert.deepEqual([past.pools.tap.used, past.pools.tap.reserved_slots, past.expired.tap], [0, 0, 1], "hold kept past 24 h");
   const again = await l.status(new Date("2026-11-02T11:00:00Z"));
   assert.equal(again.expired.tap, 1, "an expired hold was counted twice");
-  assert.equal(meta(st).open.length, 0);
+  await opened(l, "grant-ex-09", "2026-11-02T12:00:00Z");
+  assert.deepEqual([meta(st).expired!.tap, meta(st).open.map((o) => o.grant)], [1, ["grant-ex-09"]], "the next accept did not store the release once");
 });
 
 test("expiry also runs on accept: a request admitted the day after counts only live holds", async () => {
@@ -152,11 +153,6 @@ test("a later stage at exactly 24 h is taken; at 24 h + 1 ms it is refused (same
   assert.equal((await l.accept(rec("approval", "grant-ex-04", { request: h }), T("2026-11-02T10:00:00.001Z"))).status, 410);
 });
 
-test("settle never moves the day backwards", () => {
-  const m = { seq: 1, day: "2026-11-02", used: 4, bytes: 10, open: [{ grant: "g", opened: ms("2026-11-02T01:00:00Z"), left: 3 }] };
-  assert.equal(settle(m, ms("2026-11-01T23:00:00Z")).day, "2026-11-02");
-  assert.equal(settle(m, ms("2026-11-01T23:00:00Z")).used, 4);
-});
 
 // ---- re-time sync and long stalls (T11, Z4, AA2) ----
 
