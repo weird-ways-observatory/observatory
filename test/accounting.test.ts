@@ -126,15 +126,15 @@ test("status reads its clock in its own turn, after the write queued before it (
 
 test("status queued behind a write that stalls across midnight reports the new day (Codex B1 r1 #1)", async () => {
   const st = storage(), b = bucket();
-  let release!: () => void;
-  const gate = new Promise<void>((r) => (release = r));
-  const slow = { ...b, async put(k: string, body: string, o?: R2PutOptions) { await gate; return b.put(k, body, o); } };
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r)), inPut = new Promise<void>((r) => (entered = r));
+  const slow = { ...b, async put(k: string, body: string, o?: R2PutOptions) { entered(); await gate; return b.put(k, body, o); } };
   const l = new Ledger(st, slow, STORE_BUDGET_BYTES, async () => undefined);
   let now = ms("2026-11-01T23:59:59Z");
   const clock = () => new Date(now);
   const write = l.accept(rec("request", "grant-ck-02"), clock);
   const status = l.status(clock);
-  await new Promise((r) => setTimeout(r, 10));
+  await inPut; // the bucket write has started and is held (Codex B1 r2 later)
   now = ms("2026-11-02T00:00:30Z"); // the bucket write is still out when midnight passes
   release();
   assert.equal((await write).status, 201);
