@@ -42,7 +42,7 @@ it cannot detect a secret under an innocent name, so the front desk redacts (pha
 | 400 | outside the record format above (a fixed reason, never the writer's own text) |
 | 409 | approval or verdict with no recorded request; result with no recorded approval; wrong request hash or job; this stage already recorded with other content; an approval whose passkey answer fails the check below |
 | 410 | the grant's request is over 24 hours old |
-| 429 | today's 400 slots (UTC day) are taken, or the lifetime storage budget (1 GiB of stored envelopes) is full. A request takes 4 slots and reserves room in the budget for its grant's other three stages, so admitted grants can always finish. A new day starts with the slots still reserved by grants opened the day before, never at zero, so no UTC day stores more than 400 records; a write held over midnight by an outage, however briefly, is charged to the day it is finally stored and carries that day's time. A full budget refuses every request until Ben decides. |
+| 429 | today's 400 tap slots (UTC day) are taken, or the lifetime storage budget (6 GiB of stored envelopes) is full. A request takes 4 slots and reserves room in the budget for its grant's other three stages, so admitted grants can always finish; a reservation lasts 24 hours from the request's recorded time (inclusive) and is then released. Run ops will have their own 400-slot pool and stop at 5 GiB (card 509a5d85). A new day starts with the slots still reserved by grants opened the day before, never at zero, so no UTC day stores more than 400 records; a write held over midnight by an outage, however briefly, is charged to the day it is finally stored and carries that day's time. A full budget refuses every request until Ben decides. |
 
 **Approvals are checked against Ben's passkey (card 7190ab0a).** An `approval` is stored only if
 its `assertion` (`passkey_id`, `authenticator_data`, `client_data_json`, `signature`, base64url) was
@@ -149,6 +149,6 @@ the checker's chain: `src/runcheck.ts`.
 
 ## Choices for Ben to keep or change
 
-400 records a day (100 grants), 8192 bytes a record, a 1 GiB lifetime storage budget, 24 hours
+400 tap records a day (100 grants), 8192 bytes a record, a 6 GiB lifetime storage budget, 24 hours
 to finish a grant, and a 400-day lock are builder defaults (Codex r1 drift item), sized for the front desk's expected few
 approvals a day. Changing any of them is one constant in `src/contract.ts` or `src/records.ts`. Before anything deletes old records after the lock, the daily count (records stored = last number) must change with it.

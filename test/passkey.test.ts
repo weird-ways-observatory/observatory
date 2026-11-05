@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { sha256 } from "../src/contract.ts";
 import { keyFor } from "../src/contract.ts";
 import { Ledger, type Storage } from "../src/recorder/ledger.ts";
+import { storage } from "./store.ts";
 import { approvalCheck, coseToJwk, derToRaw, grantHashOf, PASSKEY_PIN, type PasskeyPin } from "../src/recorder/passkey.ts";
 
 // Card 7190ab0a: the recorder stores an approval only if Ben's pinned passkey signed it for that grant.
@@ -11,15 +12,6 @@ const ORIGIN = "https://desk.example", RP = "desk.example";
 const b64u = (b: Uint8Array) => Buffer.from(b).toString("base64url");
 const digest = async (b: Uint8Array | string) => new Uint8Array(await crypto.subtle.digest("SHA-256", typeof b === "string" ? new TextEncoder().encode(b) : b));
 
-function storage() {
-  const m = new Map<string, unknown>();
-  return {
-    m,
-    async get<T>(k: string) { return structuredClone(m.get(k)) as T | undefined; },
-    async put(e: Record<string, unknown>) { for (const [k, v] of Object.entries(e)) m.set(k, structuredClone(v)); },
-    async delete(k: string) { return m.delete(k); },
-  } satisfies Storage & { m: Map<string, unknown> };
-}
 function bucket() {
   const store = new Map<string, string>();
   return {
@@ -241,27 +233,26 @@ test("cutover: a pending approval that passes the check is stored as before", as
   assert.ok(b.store.has(keyFor(2, "grant-cut-002", "approval")));
 });
 
-test("cutover: a crash while withdrawing gives the number back only once", async () => {
+test("cutover: a fault inside the withdrawal changes nothing; the next turn withdraws once (REFINE v11 AE1)", async () => {
   const key = await softKey(), st = storage(), b = bucket();
-  let failPuts = 0, failDelete = false;
+  let failPuts = 0;
   const flaky = { ...b, async put(k: string, body: string) { if (failPuts-- > 0) throw new Error("R2 down"); return b.put(k, body); } };
   const old = new Ledger(st, flaky, undefined, async () => undefined);
   const { grantHash, request } = await requested(old, "grant-cut-003");
   failPuts = 1;
   const unsigned = approval("grant-cut-003", request, undefined);
   assert.equal((await old.accept(unsigned, NOW)).status, 503);
-  // The withdrawal's first write lands, then the instance dies before the pending record is cleared.
-  const crashing = { ...st, async delete(k: string) { if (failDelete) { failDelete = false; throw new Error("crash"); } return st.delete(k); } };
-  failDelete = true;
+  const before = structuredClone([st.m.get("meta"), st.m.get("g:grant-cut-003"), st.m.get("pending")]);
+  // The instance dies inside the withdrawal, after its accounting put, before pending is removed.
+  st.fault("pending");
   const pinned = approvalCheck(await pinFor(key));
-  assert.equal((await new Ledger(crashing, b, undefined, pinned).accept(unsigned, NOW)).status, 503); // caught: retry later
-  assert.ok(st.m.has("pending"));
-  const meta = st.m.get("meta") as { seq: number };
-  assert.equal(meta.seq, 1);
-  // The next instance finishes the withdrawal without giving a second number back.
+  assert.equal((await new Ledger(st, b, undefined, pinned).accept(unsigned, NOW)).status, 503); // caught: retry later
+  assert.deepEqual([st.m.get("meta"), st.m.get("g:grant-cut-003"), st.m.get("pending")], before, "a fault inside the withdrawal left part of it applied");
+  // The next instance withdraws it once: number 2 is given back, and the real approval takes it.
   const l = new Ledger(st, b, undefined, pinned);
   assert.equal((await l.accept(unsigned, NOW)).status, 409);
   assert.equal((st.m.get("meta") as { seq: number }).seq, 1);
+  assert.ok(!st.m.has("pending"));
   const ok = await l.accept(approval("grant-cut-003", request, await key.answer(grantHash)), NOW);
   assert.equal("receipt" in ok && ok.receipt.key, keyFor(2, "grant-cut-003", "approval"));
 });
