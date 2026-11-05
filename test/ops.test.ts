@@ -338,25 +338,28 @@ test("row 16 (X4): 200 open ops today fill the op pool; one tap request is 4 of 
 });
 
 test("row 17: storage alerts at 80/90% for the run cutoff and tap capacity; runway only after 7 full days", () => {
+  // Numbers below are for a 1 GiB tap budget, passed explicitly; the default is the recorder's own budget.
+  const GIB1 = 1024 ** 3;
+  assert.equal(STORE_BUDGET_BYTES, 6 * GIB1);
   const s = loadOps({});
-  s.written = 0.79 * STORE_BUDGET_BYTES;
-  assert.deepEqual(capacityFindings(s, NOW, 0).map((f) => f.id), []);
-  assert.deepEqual(capacityFindings(s, NOW, 0.02 * STORE_BUDGET_BYTES).map((f) => f.id), ["capacity:tap:80"]);
+  s.written = 0.79 * GIB1;
+  assert.deepEqual(capacityFindings(s, NOW, 0, GIB1).map((f) => f.id), []);
+  assert.deepEqual(capacityFindings(s, NOW, 0.02 * GIB1, GIB1).map((f) => f.id), ["capacity:tap:80"]);
   s.written = 0.91 * RUN_CUTOFF_BYTES;
   assert.deepEqual(capacityFindings(s, NOW, 0, 6 * 1024 ** 3).map((f) => f.id), ["capacity:run:90"]); // 4.55 of 6 GiB: tap under 80%
   s.written = 0.81 * 6 * 1024 ** 3;
   assert.deepEqual(capacityFindings(s, NOW, 0, 6 * 1024 ** 3).map((f) => f.id), ["capacity:run:90", "capacity:tap:80"]);
   // Runway: 1 GiB budget, 0.5 GiB used, 20 MiB a day -> ~25 days: critical, but only with 7 full days of data.
-  s.written = 0.5 * STORE_BUDGET_BYTES;
+  s.written = 0.5 * GIB1;
   s.first = "2026-11-01";
   for (let i = 1; i <= 7; i++) s.bytes[new Date(NOW - i * DAY).toISOString().slice(0, 10)] = 20 * 1024 ** 2;
-  assert.deepEqual(capacityFindings(s, NOW, 0).map((f) => f.id), []);
+  assert.deepEqual(capacityFindings(s, NOW, 0, GIB1).map((f) => f.id), []);
   s.first = "2026-10-28";
-  const f = capacityFindings(s, NOW, 0);
+  const f = capacityFindings(s, NOW, 0, GIB1);
   assert.deepEqual(f.map((x) => x.id), ["runway:tap:critical"]);
   assert.match(f[0].text, /Ben acts within 7 days/);
   for (let i = 1; i <= 7; i++) s.bytes[new Date(NOW - i * DAY).toISOString().slice(0, 10)] = 10 * 1024 ** 2; // ~51 days
-  assert.deepEqual(capacityFindings(s, NOW, 0).map((x) => x.id), ["runway:tap:warning"]);
+  assert.deepEqual(capacityFindings(s, NOW, 0, GIB1).map((x) => x.id), ["runway:tap:warning"]);
 });
 
 test("row 18 (W6): a state from before A loads with empty run-op state and raises nothing new", async () => {

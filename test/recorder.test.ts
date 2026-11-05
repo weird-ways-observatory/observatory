@@ -203,7 +203,8 @@ test("the day's cap: requests reserve their grant's slots, so admitted grants ca
   // Next UTC day: the open grants' reserved slots carry over (100 x 3 - 1 used), so only the rest is new room.
   const carried = grants * (STAGE_SLOTS - 1) - 1;
   assert.equal((await l.accept(rec("request", {}, "grant-tomorrow"), () => new Date("2026-11-02T00:00:01Z"))).status, 201);
-  assert.deepEqual(await l.status(new Date("2026-11-02T01:00:00Z")), { seq: grants + 2, used_today: carried + STAGE_SLOTS, cap: DAY_CAP, stored_bytes: (await l.status(NOW)).stored_bytes, budget_bytes: STORE_BUDGET_BYTES, pending: false, public_key: (await l.status(NOW)).public_key });
+  const next = await l.status(new Date("2026-11-02T01:00:00Z"));
+  assert.deepEqual([next.seq, next.used_today, next.cap, next.budget_bytes, next.pending, next.pools.tap.used], [grants + 2, carried + STAGE_SLOTS, DAY_CAP, STORE_BUDGET_BYTES, false, carried + STAGE_SLOTS]);
 });
 
 test("Codex r1: midnight does not reset the cap -- yesterday's open grants' slots carry over, so no UTC day takes more than the cap", async () => {

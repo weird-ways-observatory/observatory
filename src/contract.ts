@@ -12,9 +12,11 @@ export const DAY_CAP = 400;
 export const STAGE_SLOTS = 4;
 // Lifetime ceiling on stored envelopes (the lock keeps them at least 400 days; nothing deletes them
 // yet). A request also reserves room for its grant's stages. Full means every request is refused
-// until Ben decides: 1 GiB is about 60,000 records at the largest size, years at the day cap's
-// realistic use. The Durable Object's per-grant state grows with the records, so this bounds it too.
-export const STORE_BUDGET_BYTES = 1024 ** 3;
+// until Ben decides. 6 GiB (card 509a5d85, REFINE-observatory-ops.md v5): run ops stop at 5 GiB
+// (ops.ts RUN_CUTOFF_BYTES), so the last GiB is kept for Ben's taps. Written today: ~2 KB a day.
+// The Durable Object's per-grant state grows with the records, so this bounds it too. The checker's
+// tap-capacity alert (runcheck.ts capacityFindings) reads the same number.
+export const STORE_BUDGET_BYTES = 6 * 1024 ** 3;
 export const GRANT_TTL_MS = 24 * 3_600_000; // later stages of a grant are refused after this
 export const SKEW_MS = 10 * 60_000; // the recorder's own time vs the time R2 stored the object
 export const STAGES = ["request", "approval", "verdict", "result"] as const;
