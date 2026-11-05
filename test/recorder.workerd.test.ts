@@ -38,9 +38,12 @@ test("workerd transaction: a throw after the put leaves the accounting and pendi
 
 test("workerd transaction: a committed withdrawal lands the accounting and removes pending together, and survives a restart", { timeout: 60_000 }, async () => {
   const first = await start("commit");
-  const [, r] = await first.send({ method: "seed" }, { method: "withdraw", args: [false] });
-  assert.equal(r, "committed");
-  await first.mf.dispose();
+  try {
+    const [, r] = await first.send({ method: "seed" }, { method: "withdraw", args: [false] });
+    assert.equal(r, "committed");
+  } finally {
+    await first.mf.dispose(); // every workerd started here is stopped, pass or fail (B0 limit: bound processes)
+  }
   const second = await start("commit");
   try {
     const [d] = await second.send({ method: "dump" });
