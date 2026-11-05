@@ -4,7 +4,7 @@ import { DAY_CAP, KEY, keyFor, MAX_RECORD_BYTES, MAX_STORED_BYTES, sealed, sha25
 import { admit, resetCerts, type AccessEnv } from "../src/recorder/access.ts";
 import { handle } from "../src/recorder/http.ts";
 import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
-import { storage } from "./store.ts";
+import { bucket, storage } from "./store.ts";
 import { STORE_BUDGET_BYTES as TEST_BUDGET } from "../src/contract.ts";
 // Ordering, slot and storage tests: approvals are taken without the passkey check, which has its own
 // tests (passkey.test.ts) driving the real Ledger with a test pin.
@@ -18,22 +18,6 @@ const at = (m: number) => () => new Date(NOW.getTime() + m * MIN);
 const G = "grant-0001";
 
 // The records bucket in memory: head and put, with a switch to make puts fail.
-function bucket() {
-  const store = new Map<string, { body: string; sha?: string; raw?: Uint8Array }>();
-  let failPuts = 0;
-  return {
-    store,
-    failNext(n = 1) { failPuts = n; },
-    async head(k: string) { const v = store.get(k); return v ? ({ key: k, customMetadata: { sha256: v.sha } } as unknown as R2Object) : null; },
-    async get(k: string) { const v = store.get(k); return v ? ({ key: k, text: async () => v.body, arrayBuffer: async () => (v.raw ?? new TextEncoder().encode(v.body)).buffer } as unknown as R2ObjectBody) : null; },
-    async list(o: { prefix?: string; limit?: number }) { return { objects: [...store.keys()].sort().filter((k) => k.startsWith(o.prefix ?? "")).slice(0, o.limit ?? 1000).map((key) => ({ key })), truncated: false, delimitedPrefixes: [] } as unknown as R2Objects; },
-    async put(k: string, body: string, o?: R2PutOptions) {
-      if (failPuts > 0) { failPuts--; throw new Error("R2 down"); }
-      store.set(k, { body, sha: o?.customMetadata?.sha256 });
-      return {} as R2Object;
-    },
-  };
-}
 const rec = (stage: string, over: object = {}, grant = G) => JSON.stringify({ v: 1, grant, stage, job: "cf.token.canary", ...over });
 
 /** A grant's request, then a later stage that names it by hash. */
