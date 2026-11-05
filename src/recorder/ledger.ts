@@ -68,7 +68,7 @@ const reservedBytes = (m: Meta) => (held(m).tap + held(m).op) * MAX_STORED_BYTES
  * `keep` names the grant or op of the pending record, whose hold is never released while it is
  * pending (REFINE v6 Z4): it is re-timed or withdrawn by #finishPending instead.
  */
-export function settle(m: Meta, t: number, keep?: string): Meta {
+function settle(m: Meta, t: number, keep?: string): Meta {
   const expired = { tap: m.expired?.tap ?? 0, op: m.expired?.op ?? 0 };
   let used = m.used, opUsed = m.op_used ?? 0;
   const open = m.open.filter((o) => {
@@ -84,8 +84,7 @@ export function settle(m: Meta, t: number, keep?: string): Meta {
     return false;
   });
   const next: Meta = { ...m, used, open, op_used: opUsed, op_open: opOpen, expired };
-  // Never backwards: a clock reading from an earlier day (status now saves what it settles) keeps the day.
-  if (day(t) <= m.day) return next;
+  if (m.day === day(t)) return next;
   const carry = open.filter((o) => o.left > 0), opCarry = opOpen.filter((o) => o.left > 0);
   return { ...next, day: day(t), open: carry, used: held({ ...next, open: carry }).tap, op_open: opCarry, op_used: held({ ...next, op_open: opCarry }).op };
 }
@@ -136,7 +135,8 @@ export class Ledger {
    * Today's use of each pool, holds, the storage budget, whether a write is pending, refusals, and
    * the public key the checker pins (made here if none exists yet, so it can be pinned before the
    * first record). The time is read when its turn comes (REFINE v6 Z5), and holds past their 24 h are
-   * released here too, so status never shows a hold the checker has already let go. Older names stay
+   * shown released (the next accept stores that), so status never shows a hold the checker has already
+   * let go. Status writes nothing. Older names stay
    * (`used_today` = the tap pool) so the front desk's reader is unchanged.
    */
   status(at: Date | (() => Date) = () => new Date()) {
@@ -145,7 +145,6 @@ export class Ledger {
       const pending = await this.storage.get<Pending>("pending");
       const stored = await this.storage.get<Meta>("meta");
       const meta = stored ? settle(stored, now.getTime(), pending?.receipt.grant) : undefined;
-      if (meta && JSON.stringify(meta) !== JSON.stringify(stored)) await this.storage.put({ meta });
       const c = (await this.storage.get<Counters>("counters")) ?? { refused: {}, retries: 0 };
       const h = meta ? held(meta) : { tap: 0, op: 0 };
       return {
