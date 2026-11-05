@@ -824,13 +824,13 @@
       "row": "V6.3",
       "file": "src/recorder/ledger.ts",
       "find": "if (o.left <= 0 || o.grant === keep || t - o.opened <= GRANT_TTL_MS) return true;",
-      "replace": "if (o.left <= 0 || o.grant === keep || true) return true;",
-      "why": "B1 (card 509a5d85): holds past 24 h are not released within the day",
+      "replace": "if (o.left <= 0 || o.grant === keep || m.day === day(t) || t - o.opened <= GRANT_TTL_MS) return true;",
+      "why": "B1 (card 509a5d85): tap holds expire only at a UTC rollover, never within the stored day (Codex B1 r1 #2: the real defect, not expiry removed)",
       "test": {
         "file": "test/accounting.test.ts",
         "name": "T13: a hold lasts exactly 24 h, inclusive; at 24 h + 1 ms it is released the same day and counted once"
       },
-      "expect": "hold kept past 24 h"
+      "expect": "hold kept past 24 h within the stored day"
     },
     {
       "id": "b1-z4-pending-hold-released",
@@ -992,14 +992,14 @@
       "id": "b1-z5-status-clock-before-turn",
       "row": "Z5",
       "file": "src/recorder/ledger.ts",
-      "find": "  status(at: Date | (() => Date) = () => new Date()) {\n    return this.#serial(async () => {\n      const now = typeof at === \"function\" ? at() : at;",
-      "replace": "  status(at: Date | (() => Date) = () => new Date()) {\n    const now = typeof at === \"function\" ? at() : at;\n    return this.#serial(async () => {",
+      "find": "  status(clock: () => Date = () => new Date()) {\n    return this.#serial(async () => {\n      const now = clock();",
+      "replace": "  status(clock: () => Date = () => new Date()) {\n    const now = clock();\n    return this.#serial(async () => {",
       "why": "B1 (card 509a5d85): status reads its clock before its queue turn",
       "test": {
         "file": "test/accounting.test.ts",
-        "name": "status reads its clock in its own turn, after the write queued before it (REFINE v6 Z5)"
+        "name": "status queued behind a write that stalls across midnight reports the new day (Codex B1 r1 #1)"
       },
-      "expect": "status read the clock before its turn"
+      "expect": "status used a time taken before its turn"
     },
     {
       "id": "b1-crossday-unverified-low",

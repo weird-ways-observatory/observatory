@@ -62,7 +62,7 @@ function expectedDiff(st: St, b: B, now: number) {
   return q + rHolds - cHolds;
 }
 async function compare(l: Ledger, st: St, b: B, iso: string, want: number) {
-  const s = await l.status(new Date(iso)), c = checker(b, ms(iso)).use, d = expectedDiff(st, b, ms(iso));
+  const s = await l.status(() => new Date(iso)), c = checker(b, ms(iso)).use, d = expectedDiff(st, b, ms(iso));
   assert.equal(d, want, "the pending identity gives the table's number for this case");
   assert.equal(s.pools.tap.used - c.tap, d, "recorder tap pool minus checker poolUse differs from the pending identity (REFINE v8 AB1)");
   const p = st.m.get("pending") as Pend | undefined, g = p ? checker(b, ms(iso)).grants.get(p.receipt.grant) : undefined;
@@ -77,7 +77,7 @@ async function compare(l: Ledger, st: St, b: B, iso: string, want: number) {
 test("status shows both pools (op pool empty), 6 GiB budget, 5 GiB op cutoff, pending bytes and every counter", async () => {
   const { l, b } = ledger();
   await opened(l, "grant-st-01", "2026-11-01T12:00:00Z");
-  const s = await l.status(new Date("2026-11-01T12:01:00Z"));
+  const s = await l.status(() => new Date("2026-11-01T12:01:00Z"));
   assert.deepEqual(s.pools, {
     tap: { used: STAGE_SLOTS, cap: DAY_CAP, reserved_slots: STAGE_SLOTS - 1, reserved_bytes: (STAGE_SLOTS - 1) * MAX_STORED_BYTES },
     op: { used: 0, cap: OP_DAY_CAP, reserved_slots: 0, reserved_bytes: 0 },
@@ -98,7 +98,7 @@ test("refusals are counted by fixed reason word and identical retries apart", as
   assert.equal((await l.accept(rec("approval", "grant-rf-02", { request: "a".repeat(64) }), T("2026-11-01T12:00:03Z"))).status, 409);
   b.failNext(2);
   assert.equal((await l.accept(rec("request", "grant-rf-03"), T("2026-11-01T12:00:04Z"))).status, 503);
-  const s = await l.status(new Date("2026-11-01T12:00:05Z"));
+  const s = await l.status(() => new Date("2026-11-01T12:00:05Z"));
   assert.deepEqual([s.refused.invalid, s.refused.conflict, s.refused.stuck, s.retries], [1, 1, 1, 1], "refusal or retry not counted by its reason");
   assert.ok(s.pending_bytes > 0, "pending_bytes is 0 while a record is pending");
 });
@@ -110,7 +110,7 @@ test("a pool refusal is counted as tap_pool_full; a full budget as budget_full",
   const m = meta(st);
   st.m.set("meta", { ...m, used: DAY_CAP });
   assert.equal((await l.accept(rec("request", "grant-pf-03"), T("2026-11-01T12:00:02Z"))).status, 429);
-  const s = await l.status(new Date("2026-11-01T12:00:03Z"));
+  const s = await l.status(() => new Date("2026-11-01T12:00:03Z"));
   assert.deepEqual([s.refused.budget_full, s.refused.tap_pool_full], [1, 1], "429 reasons not told apart");
 });
 
@@ -124,19 +124,41 @@ test("status reads its clock in its own turn, after the write queued before it (
   assert.deepEqual(order, ["queued", "write", "status"], "status read the clock before its turn");
 });
 
+test("status queued behind a write that stalls across midnight reports the new day (Codex B1 r1 #1)", async () => {
+  const st = storage(), b = bucket();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const slow = { ...b, async put(k: string, body: string, o?: R2PutOptions) { await gate; return b.put(k, body, o); } };
+  const l = new Ledger(st, slow, STORE_BUDGET_BYTES, async () => undefined);
+  let now = ms("2026-11-01T23:59:59Z");
+  const clock = () => new Date(now);
+  const write = l.accept(rec("request", "grant-ck-02"), clock);
+  const status = l.status(clock);
+  await new Promise((r) => setTimeout(r, 10));
+  now = ms("2026-11-02T00:00:30Z"); // the bucket write is still out when midnight passes
+  release();
+  assert.equal((await write).status, 201);
+  const s = await status;
+  assert.equal(s.pools.tap.used, STAGE_SLOTS - 1, "status used a time taken before its turn (it counted yesterday's charge)");
+});
+
 // ---- expiry (V6.3, T13) ----
 
 test("T13: a hold lasts exactly 24 h, inclusive; at 24 h + 1 ms it is released the same day and counted once", async () => {
   const { l, st } = ledger();
   await opened(l, "grant-ex-01", "2026-11-01T10:00:00Z");
-  const at24 = await l.status(new Date("2026-11-02T10:00:00.000Z"));
-  assert.deepEqual([at24.pools.tap.used, at24.pools.tap.reserved_slots], [STAGE_SLOTS - 1, STAGE_SLOTS - 1], "hold released at exactly 24 h");
-  const past = await l.status(new Date("2026-11-02T10:00:00.001Z"));
-  assert.deepEqual([past.pools.tap.used, past.pools.tap.reserved_slots, past.expired.tap], [0, 0, 1], "hold kept past 24 h");
-  const again = await l.status(new Date("2026-11-02T11:00:00Z"));
+  // A write on day 2 first, so the stored day is already day 2: expiry must happen within the day,
+  // not only at a rollover (Codex B1 r1 #2).
+  await opened(l, "grant-ex-00", "2026-11-02T09:00:00Z");
+  assert.equal(meta(st).day, "2026-11-02");
+  const at24 = await l.status(() => new Date("2026-11-02T10:00:00.000Z"));
+  assert.deepEqual([at24.pools.tap.used, at24.pools.tap.reserved_slots], [2 * STAGE_SLOTS - 1, 2 * (STAGE_SLOTS - 1)], "hold released at exactly 24 h");
+  const past = await l.status(() => new Date("2026-11-02T10:00:00.001Z"));
+  assert.deepEqual([past.pools.tap.used, past.pools.tap.reserved_slots, past.expired.tap], [STAGE_SLOTS, STAGE_SLOTS - 1, 1], "hold kept past 24 h within the stored day");
+  const again = await l.status(() => new Date("2026-11-02T11:00:00Z"));
   assert.equal(again.expired.tap, 1, "an expired hold was counted twice");
   await opened(l, "grant-ex-09", "2026-11-02T12:00:00Z");
-  assert.deepEqual([meta(st).expired!.tap, meta(st).open.map((o) => o.grant)], [1, ["grant-ex-09"]], "the next accept did not store the release once");
+  assert.deepEqual([meta(st).expired!.tap, meta(st).open.map((o) => o.grant)], [1, ["grant-ex-00", "grant-ex-09"]], "the next accept did not store the release once");
 });
 
 test("expiry also runs on accept: a request admitted the day after counts only live holds", async () => {
@@ -174,7 +196,7 @@ for (const reads of [false, true]) {
     await l.accept(rec("request", "grant-st-10"), T("2026-11-01T12:00:00Z"));
     if (reads) {
       for (const iso of ["2026-11-01T23:00:00Z", "2026-11-02T12:00:00.001Z", "2026-11-02T13:00:00Z"]) {
-        const s = await l.status(new Date(iso));
+        const s = await l.status(() => new Date(iso));
         assert.equal(s.pools.tap.reserved_slots, STAGE_SLOTS - 1, `status at ${iso} released the pending record's hold`);
       }
       b.failNext(0);
@@ -185,7 +207,7 @@ for (const reads of [false, true]) {
     assert.deepEqual(hold(st, "grant-st-10"), { grant: "grant-st-10", opened: ms(back), left: STAGE_SLOTS - 1 });
     assert.equal(meta(st).used, 2 * STAGE_SLOTS, "re-charged request: 3 carried + 1 today, plus the new grant's 4");
     assert.equal(meta(st).expired!.tap, 0);
-    const later = await l.status(new Date("2026-11-03T14:00:00.000Z"));
+    const later = await l.status(() => new Date("2026-11-03T14:00:00.000Z"));
     assert.equal(later.pools.tap.reserved_slots, 2 * (STAGE_SLOTS - 1), "the re-timed hold ran out before its new 24 h");
   });
 }
@@ -194,7 +216,7 @@ test("Z4: a request pending across midnight is charged once to the new day (3 ca
   const { l, st, b } = ledger();
   b.failNext();
   await l.accept(rec("request", "grant-mn-01"), T("2026-11-01T23:58:00Z"));
-  const s = await l.status(new Date("2026-11-02T00:01:00Z"));
+  const s = await l.status(() => new Date("2026-11-02T00:01:00Z"));
   assert.equal(s.pools.tap.used, STAGE_SLOTS - 1); // only the hold carries; the record is charged when stored
   await l.accept(rec("verdict", "grant-zz-zz", { request: "a".repeat(64) }), T("2026-11-02T00:03:00Z"));
   assert.equal(meta(st).used, STAGE_SLOTS);
@@ -281,7 +303,7 @@ test("an unverified approval charged yesterday, withdrawn today, goes back to to
   await opened(l, "grant-uv-02", "2026-11-02T00:01:00Z");
   assert.equal(hold(st, "grant-uv-01")!.left, STAGE_SLOTS - 1);
   assert.equal(meta(st).used, (STAGE_SLOTS - 1) + STAGE_SLOTS, "today's pool reads one low after a cross-day withdrawal");
-  const s = await l.status(new Date("2026-11-02T00:02:00Z"));
+  const s = await l.status(() => new Date("2026-11-02T00:02:00Z"));
   const c = checker(b, ms("2026-11-02T00:02:00Z")).use;
   assert.equal(s.pools.tap.used, c.tap, "recorder and checker disagree with nothing pending");
 });
@@ -315,7 +337,7 @@ test("T15: a pending op stored on a later day is charged to the op pool, never t
   st.m.set("g:op-0001", { job: "x", request: "e".repeat(64), opened: ms("2026-11-01T23:59:00Z"), stages: { op: { v: 1, seq: 2, key: "records/v1/000000000002.op-0001.op.json", grant: "op-0001", stage: "op", sha256: "e".repeat(64), recorded_at: "2026-11-01T23:59:00.000Z" } } });
   st.m.set("pending", { key: "records/v1/000000000002.op-0001.op.json", stored: body, storedSha: await sha256(body), receipt: { v: 1, seq: 2, key: "records/v1/000000000002.op-0001.op.json", grant: "op-0001", stage: "op", sha256: "e".repeat(64), recorded_at: "2026-11-01T23:59:00.000Z" }, day: "2026-11-01", pool: "op" });
   st.m.set("meta", { ...m, seq: 2, op_used: 2, op_open: [{ op: "op-0001", at: ms("2026-11-01T23:59:00Z"), left: 1 }] });
-  await l.status(new Date("2026-11-02T00:01:00Z"));
+  await l.status(() => new Date("2026-11-02T00:01:00Z"));
   await opened(l, "grant-op-01", "2026-11-02T00:02:00Z");
   assert.deepEqual([meta(st).op_used, meta(st).used], [1 + 1, (STAGE_SLOTS - 1) + STAGE_SLOTS], "op re-charged to the wrong pool");
 });

@@ -74,7 +74,7 @@ async function viaRecorder(b: B, grants = [G], start = -10, stages: Stage[] = ["
   return l;
 }
 /** The pin Ben would merge: the recorder's public key from its status, signed from record `from` on. */
-const pinOf = async (l: Ledger, from = 1): Promise<Pin> => ({ key: (await l.status(NOW)).public_key, from });
+const pinOf = async (l: Ledger, from = 1): Promise<Pin> => ({ key: (await l.status(() => NOW)).public_key, from });
 /** A record placed straight into the bucket, as something around the recorder would. */
 async function planted(b: B, seq: number, grant: string, stage: Stage, uploaded: Date, over: { body?: string; envelope?: object; request?: string } = {}) {
   const body = over.body ?? rec(stage, stage === "request" ? {} : { request: over.request ?? "a".repeat(64) }, grant);

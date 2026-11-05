@@ -139,9 +139,9 @@ export class Ledger {
    * let go. Status writes nothing. Older names stay
    * (`used_today` = the tap pool) so the front desk's reader is unchanged.
    */
-  status(at: Date | (() => Date) = () => new Date()) {
+  status(clock: () => Date = () => new Date()) {
     return this.#serial(async () => {
-      const now = typeof at === "function" ? at() : at;
+      const now = clock(); // a clock, never a time: a Date taken before the queue goes stale behind a stalled write (Codex B1 r1 #1)
       const pending = await this.storage.get<Pending>("pending");
       const stored = await this.storage.get<Meta>("meta");
       const meta = stored ? settle(stored, now.getTime(), pending?.receipt.grant) : undefined;

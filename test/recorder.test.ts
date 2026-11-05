@@ -187,7 +187,7 @@ test("the day's cap: requests reserve their grant's slots, so admitted grants ca
   // Next UTC day: the open grants' reserved slots carry over (100 x 3 - 1 used), so only the rest is new room.
   const carried = grants * (STAGE_SLOTS - 1) - 1;
   assert.equal((await l.accept(rec("request", {}, "grant-tomorrow"), () => new Date("2026-11-02T00:00:01Z"))).status, 201);
-  const next = await l.status(new Date("2026-11-02T01:00:00Z"));
+  const next = await l.status(() => new Date("2026-11-02T01:00:00Z"));
   assert.deepEqual([next.seq, next.used_today, next.cap, next.budget_bytes, next.pending, next.pools.tap.used], [grants + 2, carried + STAGE_SLOTS, DAY_CAP, STORE_BUDGET_BYTES, false, carried + STAGE_SLOTS]);
 });
 
@@ -269,7 +269,7 @@ test("Codex r2: a write held over midnight by an outage is charged to the day it
   }
   const nov2 = b.store.size - storedBefore;
   assert.ok(nov2 <= DAY_CAP, `${nov2} records stored on 2026-11-02`);
-  assert.ok((await l.status(morn())).used_today <= DAY_CAP);
+  assert.ok((await l.status(morn)).used_today <= DAY_CAP);
   // And the held record carries the day it was actually stored.
   const held = [...b.store.values()].map((v) => JSON.parse(v.body) as Envelope).find((v) => v.grant === "grant-e0099" && v.stage === "result")!;
   assert.ok(held.recorded_at.startsWith("2026-11-02"), held.recorded_at);
@@ -306,7 +306,7 @@ test("simultaneous writes are taken one at a time: no shared sequence number, no
   const outs = await Promise.all(Array.from({ length: 20 }, (_, i) => l.accept(rec("request", {}, `grant-${String(i).padStart(4, "0")}`), at(0))));
   const seqs = outs.map((o) => ("receipt" in o ? o.receipt.seq : 0)).sort((x, y) => x - y);
   assert.deepEqual(seqs, Array.from({ length: 20 }, (_, i) => i + 1));
-  assert.equal((await l.status(NOW)).used_today, 20 * STAGE_SLOTS);
+  assert.equal((await l.status(() => NOW)).used_today, 20 * STAGE_SLOTS);
   // Two copies of one grant's request at once: one stored, one answered with the same receipt.
   const pair = await Promise.all([l.accept(rec("request", {}, "grant-twins"), at(0)), l.accept(rec("request", {}, "grant-twins"), at(0))]);
   assert.deepEqual(pair.map((o) => o.status), [201, 200]);
@@ -380,7 +380,7 @@ test("the address: two paths only; the login check runs before the body is read;
   resetCerts();
   const s = await signer();
   const st = storage(), b = bucket(), l = new TestLedger(st, b);
-  const stub = { accept: (body: string) => l.accept(body, at(0)), status: () => l.status(NOW) };
+  const stub = { accept: (body: string) => l.accept(body, at(0)), status: () => l.status(() => NOW) };
   let bodyRead = false;
   const tracked = new ReadableStream({ pull(c) { bodyRead = true; c.enqueue(new TextEncoder().encode(rec("request"))); c.close(); } }, { highWaterMark: 0 });
   const go = (req: Request) => handle(req, ENV, () => stub, s.fetchFn, NOW);
@@ -427,7 +427,7 @@ test("the address: two paths only; the login check runs before the body is read;
 
 /** True if the stored envelope at `key` verifies against the recorder's public key from its status. */
 async function sealedOk(l: Ledger, b: ReturnType<typeof bucket>, key: string) {
-  const pub = await crypto.subtle.importKey("raw", unb64((await l.status(NOW)).public_key), "Ed25519", false, ["verify"]);
+  const pub = await crypto.subtle.importKey("raw", unb64((await l.status(() => NOW)).public_key), "Ed25519", false, ["verify"]);
   const x = JSON.parse(b.store.get(key)!.body) as Envelope;
   return x.v === 2 && crypto.subtle.verify("Ed25519", pub, unb64(x.sig!), sealed(x));
 }
@@ -435,10 +435,10 @@ async function sealedOk(l: Ledger, b: ReturnType<typeof bucket>, key: string) {
 test("every stored envelope is version 2 and signed; the key is made once and survives a restart", async () => {
   const { st, b, l, later } = await setup();
   assert.equal(await sealedOk(l, b, keyFor(1, G, "request")), true);
-  const pub = (await l.status(NOW)).public_key;
+  const pub = (await l.status(() => NOW)).public_key;
   // A new Ledger over the same storage (a Durable Object restart) signs with the same key.
   const again = new TestLedger(st, b);
-  assert.equal((await again.status(NOW)).public_key, pub);
+  assert.equal((await again.status(() => NOW)).public_key, pub);
   assert.equal((await again.accept(later("approval"), at(1))).status, 201);
   assert.equal(await sealedOk(l, b, keyFor(2, G, "approval")), true);
 });
@@ -455,7 +455,7 @@ test("T10: a record stored late is signed again over the time it was actually st
 
 test("T11: status shows only the 32-byte public key; nothing in it imports as a private key", async () => {
   const st = storage(), l = new TestLedger(st, bucket());
-  const s = await l.status(NOW); // made on first status, before any record
+  const s = await l.status(() => NOW); // made on first status, before any record
   assert.equal(unb64(s.public_key).length, 32);
   for (const v of Object.values(s)) {
     if (typeof v !== "string") continue;

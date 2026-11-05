@@ -17,7 +17,8 @@ export interface RecorderEnv extends AccessEnv {
 export class Recorder extends DurableObject<RecorderEnv> {
   #ledger = new Ledger(this.ctx.storage as unknown as Storage, this.env.RECORDS);
   accept(body: string) { return this.#ledger.accept(body); }
-  status() { return this.#ledger.status(new Date()); }
+  // No time is passed: the ledger reads its clock when the status turn runs (card 509a5d85, Codex B1 r1 #1).
+  status() { return this.#ledger.status(); }
 }
 
 export default {
