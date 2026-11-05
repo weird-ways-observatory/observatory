@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { sha256 } from "../src/contract.ts";
 import { keyFor } from "../src/contract.ts";
 import { Ledger, type Storage } from "../src/recorder/ledger.ts";
+import { storage } from "./store.ts";
 import { approvalCheck, coseToJwk, derToRaw, grantHashOf, PASSKEY_PIN, type PasskeyPin } from "../src/recorder/passkey.ts";
 
 // Card 7190ab0a: the recorder stores an approval only if Ben's pinned passkey signed it for that grant.
@@ -11,15 +12,6 @@ const ORIGIN = "https://desk.example", RP = "desk.example";
 const b64u = (b: Uint8Array) => Buffer.from(b).toString("base64url");
 const digest = async (b: Uint8Array | string) => new Uint8Array(await crypto.subtle.digest("SHA-256", typeof b === "string" ? new TextEncoder().encode(b) : b));
 
-function storage() {
-  const m = new Map<string, unknown>();
-  return {
-    m,
-    async get<T>(k: string) { return structuredClone(m.get(k)) as T | undefined; },
-    async put(e: Record<string, unknown>) { for (const [k, v] of Object.entries(e)) m.set(k, structuredClone(v)); },
-    async delete(k: string) { return m.delete(k); },
-  } satisfies Storage & { m: Map<string, unknown> };
-}
 function bucket() {
   const store = new Map<string, string>();
   return {

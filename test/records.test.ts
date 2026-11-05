@@ -4,6 +4,7 @@ import worker from "../src/index.ts";
 import { FRESH_CRON } from "../src/fresh.ts";
 import { b64, DAY_CAP, keyFor, MAX_STORED_BYTES, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
 import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
+import { storage } from "./store.ts";
 import { fp, MAX_COPIES, MAX_DROPPED, MAX_INCIDENTS, MAX_SWEEP_READS, MIN_LOCK_SECONDS, PAGE, PIN, runRecords, STATE_KEY, SWEEP_HOUR, type Pin, type RecordsEnv } from "../src/records.ts";
 import { STORE_BUDGET_BYTES as TEST_BUDGET } from "../src/contract.ts";
 // Ordering, slot and storage tests: approvals are taken without the passkey check, which has its own
@@ -55,10 +56,7 @@ function bucket(pageSize = 1000) {
 }
 type B = ReturnType<typeof bucket>;
 
-function memory(): Storage {
-  const m = new Map<string, unknown>();
-  return { async get<T>(k: string) { return structuredClone(m.get(k)) as T | undefined; }, async put(e) { for (const [k, v] of Object.entries(e)) m.set(k, structuredClone(v)); }, async delete(k) { return m.delete(k); } };
-}
+const memory = storage;
 const rec = (stage: string, over: object = {}, grant = G) => JSON.stringify({ v: 1, grant, stage, job: "cf.token.canary", ...over });
 
 /** Records written the real way, through the recorder's ledger, each stored at its own minute. */

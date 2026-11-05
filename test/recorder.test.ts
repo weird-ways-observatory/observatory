@@ -4,6 +4,7 @@ import { DAY_CAP, KEY, keyFor, MAX_RECORD_BYTES, MAX_STORED_BYTES, sealed, sha25
 import { admit, resetCerts, type AccessEnv } from "../src/recorder/access.ts";
 import { handle } from "../src/recorder/http.ts";
 import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
+import { storage } from "./store.ts";
 import { STORE_BUDGET_BYTES as TEST_BUDGET } from "../src/contract.ts";
 // Ordering, slot and storage tests: approvals are taken without the passkey check, which has its own
 // tests (passkey.test.ts) driving the real Ledger with a test pin.
@@ -16,17 +17,6 @@ const MIN = 60_000;
 const at = (m: number) => () => new Date(NOW.getTime() + m * MIN);
 const G = "grant-0001";
 
-// Durable Object storage in memory; `put` of several keys lands together, like the real one.
-function storage() {
-  const m = new Map<string, unknown>();
-  const s: Storage & { m: typeof m } = {
-    m,
-    async get<T>(k: string) { return structuredClone(m.get(k)) as T | undefined; },
-    async put(e: Record<string, unknown>) { for (const [k, v] of Object.entries(e)) m.set(k, structuredClone(v)); },
-    async delete(k: string) { return m.delete(k); },
-  };
-  return s;
-}
 // The records bucket in memory: head and put, with a switch to make puts fail.
 function bucket() {
   const store = new Map<string, { body: string; sha?: string; raw?: Uint8Array }>();

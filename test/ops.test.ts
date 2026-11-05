@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { b64, keyFor, MAX_STORED_BYTES, sealed, sha256, STORE_BUDGET_BYTES, type Envelope, type Stage } from "../src/contract.ts";
 import { canonical } from "../src/recorder/passkey.ts";
 import { Ledger, type Storage } from "../src/recorder/ledger.ts";
+import { storage } from "./store.ts";
 import { OP_DAY_CAP, opKeyFor, OPS_FROM, parseDescriptor, poolUse, RUN_CUTOFF_BYTES, validateOp, type OpStage } from "../src/ops.ts";
 import { capacityFindings, loadOps, onApproval, onRequest } from "../src/runcheck.ts";
 import { MAX_OPEN, runRecords, STATE_KEY, type Pin, type RecordsEnv } from "../src/records.ts";
@@ -112,9 +113,7 @@ test("W7/X3: op and op_result take exact fields; result codes are pinned per out
 });
 
 test("row 19 (V1, V9a): the live recorder, unchanged, refuses op and op_result with 400", async () => {
-  const m = new Map<string, unknown>();
-  const s: Storage = { async get<T>(k: string) { return structuredClone(m.get(k)) as T; }, async put(e) { for (const [k, v] of Object.entries(e)) m.set(k, structuredClone(v)); }, async delete(k) { return m.delete(k); } };
-  const l = new Ledger(s, bucket() as never, STORE_BUDGET_BYTES, async () => undefined);
+  const l = new Ledger(storage(), bucket() as never, STORE_BUDGET_BYTES, async () => undefined);
   for (const body of [{ stage: "op", ...opRec("e".repeat(64)) }, { stage: "op_result", ...doneRec("e".repeat(64)) }]) {
     assert.deepEqual(await l.accept(JSON.stringify({ v: 1, grant: OP, ...body })), { status: 400, why: "no valid stage" });
   }

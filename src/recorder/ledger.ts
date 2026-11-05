@@ -10,11 +10,21 @@
 import { b64, DAY_CAP, GRANT_TTL_MS, keyFor, MAX_STORED_BYTES, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt, type Stage } from "../contract.ts";
 import { approvalCheck, grantHashOf, PASSKEY_PIN, type ApprovalCheck } from "./passkey.ts";
 
-/** The slice of Durable Object storage used here; each put of several keys is one atomic write. */
-export interface Storage {
+/**
+ * The slice of Durable Object storage used here; each put of several keys is one atomic write.
+ * `transaction` runs `fn` so that every put and delete inside it lands together or not at all (a
+ * throw inside `fn` discards them all). Used where two writes must never be seen apart: a withdrawal's
+ * accounting and the removal of `pending` (REFINE-observatory-ops.md v11 AE1). The live object passes
+ * Cloudflare's own `ctx.storage` (index.ts); test/recorder.workerd.test.ts proves the all-or-nothing
+ * behaviour in the real runtime, and test/store.ts mirrors it for the fast tests.
+ */
+export interface Txn {
   get<T>(key: string): Promise<T | undefined>;
   put(entries: Record<string, unknown>): Promise<void>;
   delete(key: string): Promise<boolean>;
+}
+export interface Storage extends Txn {
+  transaction<T>(fn: (txn: Txn) => Promise<T>): Promise<T>;
 }
 export type Bucket = Pick<R2Bucket, "get" | "put">;
 
