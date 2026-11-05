@@ -1039,6 +1039,45 @@
         "name": "T15: a pending op meets a full op pool on its new day: it waits (503), the tap pool untouched"
       },
       "expect": "a pending op was stored past a full op pool"
+    },
+    {
+      "id": "b1-ae1-late-delete-dropped",
+      "row": "AE1",
+      "file": "src/recorder/ledger.ts",
+      "find": "      await txn.delete(\"pending\");\n    });\n  }\n\n  /** The pending record under",
+      "replace": "    });\n  }\n\n  /** The pending record under",
+      "why": "B1 (card 509a5d85): the late withdrawal never removes pending, so a later turn withdraws it again (Codex B1 r1 #3)",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AE1: a committed late withdrawal removes pending in the same step, even when the turn's own record is refused"
+      },
+      "expect": "pending survived a committed withdrawal"
+    },
+    {
+      "id": "b1-ae1-unverified-delete-dropped",
+      "row": "AE1",
+      "file": "src/recorder/ledger.ts",
+      "find": "      await txn.delete(\"pending\");\n    });\n    return true;",
+      "replace": "    });\n    return true;",
+      "why": "B1 (card 509a5d85): the unverified withdrawal never removes pending, so a later turn withdraws it again (Codex B1 r1 #3)",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AE1: a committed unverified withdrawal removes pending in the same step, even when the turn's own record is refused"
+      },
+      "expect": "pending survived a committed withdrawal"
+    },
+    {
+      "id": "b1-ae1-unverified-plant-two-writes",
+      "row": "AE1",
+      "file": "src/recorder/ledger.ts",
+      "find": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await this.storage.transaction(async (txn) => {",
+      "replace": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await ((fn: (t: Txn) => Promise<void>) => fn(this.storage))(async (txn) => {",
+      "why": "B1 (card 509a5d85): with a planted name and a fault, the unverified withdrawal's writes land apart (Codex B1 r1 #3)",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "AE1: unverified approval, a conflicting object planted at its name, a fault inside the withdrawal: nothing applied; then withdrawn once"
+      },
+      "expect": "a fault inside the withdrawal left part of it applied"
     }
   ],
   "retired": []

@@ -410,3 +410,69 @@ test("AB1: nothing pending: recorder and checker agree exactly", async () => {
   await opened(l, "grant-ab-08", "2026-11-02T08:00:00Z");
   for (const iso of ["2026-11-02T09:00:00Z", "2026-11-02T12:00:00.000Z", "2026-11-02T12:00:00.001Z"]) await compare(l, st, b, iso, 0);
 });
+
+// ---- AE1 for #withdrawUnverified, and the delete held inside each transaction (Codex B1 r1 #3) ----
+
+/** An approval for a grant opened at noon, left pending at 12:05 (bucket down), then judged unverified. */
+async function unverifiedApproval() {
+  const st = storage(), b = bucket();
+  let refuse = false;
+  const l = new Ledger(st, b, STORE_BUDGET_BYTES, async () => (refuse ? "no passkey" : undefined));
+  const h = await opened(l, "grant-uw-01", "2026-11-01T12:00:00Z");
+  b.failNext();
+  assert.equal((await l.accept(rec("approval", "grant-uw-01", { request: h }), T("2026-11-01T12:05:00Z"))).status, 503);
+  refuse = true;
+  const requestBytes = len(b.store.get(keyFor(1, "grant-uw-01", "request"))!.body);
+  return { st, b, l, h, requestBytes };
+}
+function assertUnverifiedWithdrawn(st: St, b: B, requestBytes: number) {
+  assert.equal(st.m.has("pending"), false, "pending survived a committed withdrawal");
+  assert.equal(grantOf(st, "grant-uw-01").stages.approval, undefined, "an approval receipt was re-created for a record never written");
+  assert.equal([...b.store.keys()].some((k) => k.includes("grant-uw-01.approval")), false, "the unverified approval was written");
+  assert.deepEqual([meta(st).seq, meta(st).bytes, meta(st).used, hold(st, "grant-uw-01")!.left], [1, requestBytes, STAGE_SLOTS, STAGE_SLOTS - 1], "unverified withdrawal totals not reconciled once");
+}
+
+test("AE1: unverified approval, a conflicting object planted at its name, a fault inside the withdrawal: nothing applied; then withdrawn once", async () => {
+  const { st, b, l, requestBytes } = await unverifiedApproval();
+  const p = st.m.get("pending") as Pend;
+  b.store.set(p.key, { body: "planted" });
+  st.fault("pending", 1); // the retag's put passes; the withdrawal's delete dies
+  assert.equal((await l.accept("{", T("2026-11-01T12:06:00Z"))).status, 503);
+  const retagged = st.m.get("pending") as Pend;
+  assert.notEqual(retagged.key, p.key, "the planted name was not retagged first");
+  assert.equal(grantOf(st, "grant-uw-01").stages.approval?.seq, 2, "a fault inside the withdrawal left part of it applied");
+  assert.equal((await l.accept("{", T("2026-11-01T12:07:00Z"))).status, 400); // the next turn withdraws, then refuses the bad body
+  b.store.delete(p.key);
+  assertUnverifiedWithdrawn(st, b, requestBytes);
+});
+
+test("AE1: a committed unverified withdrawal removes pending in the same step, even when the turn's own record is refused", async () => {
+  const { st, b, l, requestBytes } = await unverifiedApproval();
+  assert.equal((await l.accept("{", T("2026-11-01T12:06:00Z"))).status, 400);
+  assertUnverifiedWithdrawn(st, b, requestBytes);
+  assert.equal((await l.accept("{", T("2026-11-01T12:07:00Z"))).status, 400); // a second turn changes nothing
+  assertUnverifiedWithdrawn(st, b, requestBytes);
+});
+
+test("AE1: a committed late withdrawal removes pending in the same step, even when the turn's own record is refused", async () => {
+  const { l, st, b, requestBytes } = await lateApproval();
+  assert.equal((await l.accept("{", T(RECOVER))).status, 400);
+  assert.equal(st.m.has("pending"), false, "pending survived a committed withdrawal");
+  assert.equal((await l.accept("{", T("2026-11-02T12:00:01Z"))).status, 400);
+  assertWithdrawn(st, b, requestBytes, 1);
+});
+
+test("unverified AND late: withdrawn as unverified, then its grant's hold expires on the same turn, counted once", async () => {
+  const st = storage(), b = bucket();
+  let refuse = false;
+  const l = new Ledger(st, b, STORE_BUDGET_BYTES, async () => (refuse ? "no passkey" : undefined));
+  const h = await opened(l, "grant-ul-01", "2026-11-01T12:00:00Z");
+  b.failNext();
+  await l.accept(rec("approval", "grant-ul-01", { request: h }), T("2026-11-02T11:54:00Z"));
+  refuse = true;
+  await opened(l, "grant-ul-02", RECOVER);
+  assert.equal(grantOf(st, "grant-ul-01").stages.approval, undefined);
+  assert.deepEqual([meta(st).seq, meta(st).used, meta(st).expired!.tap, hold(st, "grant-ul-01")], [2, STAGE_SLOTS, 1, undefined], "unverified-and-late withdrawal totals not reconciled");
+  const s = await l.status(() => new Date(RECOVER));
+  assert.equal(s.pools.tap.used, checker(b, ms(RECOVER)).use.tap, "recorder and checker disagree after an unverified-and-late withdrawal");
+});
