@@ -1,0 +1,309 @@
+{
+  "mutants": [
+    {
+      "id": "kill",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "why": "cap removed; the cap test catches it",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "survivor",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "why": "cap removed; the designated test never exceeds max",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp keeps small"
+      },
+      "expect": "clamp-keep"
+    },
+    {
+      "id": "missing-anchor",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "if (n >= max)",
+      "replace": "if (false)",
+      "why": "stale anchor",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "duplicate-anchor",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "return ",
+      "replace": "return 0 * ",
+      "why": "anchor not unique",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "compile-error",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "  if (n > max) return \"max\";\n",
+      "why": "mutant does not typecheck",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "runtime-throw",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "  if (n > max) throw new TypeError(\"boom\");\n",
+      "why": "a throw is not an assertion",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "module-load",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "export function spin",
+      "replace": "throw new Error(\"load\");\nexport function spin",
+      "why": "module fails to load",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "timeout",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  while (i < limit) i++;\n",
+      "replace": "  while (i < limit) i += 0;\n",
+      "why": "never ends",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "spin ends"
+      },
+      "expect": "spin-ends"
+    },
+    {
+      "id": "zero-tests",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "why": "no test has this name",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "wrong-message",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "why": "fails, but not with the named assertion",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "some-other-message"
+    },
+    {
+      "id": "baseline-fails",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "why": "the designated test already fails unmutated",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "broken baseline"
+      },
+      "expect": "broken-baseline"
+    },
+    {
+      "id": "hook-only",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the failing assertion is in a beforeEach hook",
+      "test": {
+        "file": "test/hook.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "skipped-baseline",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the designated test is skipped unmutated",
+      "test": {
+        "file": "test/skip.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "suite-hook",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the suite's after hook also fails",
+      "test": {
+        "file": "test/suite.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "nested-kill",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "a genuine kill inside describe() counts",
+      "test": {
+        "file": "test/nested.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "imported-test",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the named test is defined in another file",
+      "test": {
+        "file": "test/importer.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "self-kill",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "why": "the process is killed after the assertion is reported",
+      "test": {
+        "file": "test/signal.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "escape-path",
+      "row": "self",
+      "file": "../outside.ts",
+      "find": "x",
+      "replace": "y",
+      "why": "the mutated file is outside the project",
+      "test": {
+        "file": "test/lib.test.ts",
+        "name": "clamp caps at max"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "noisy-stdout",
+      "row": "self",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "why": "the test prints a JSON line that looks like an event",
+      "test": {
+        "file": "test/noisy.test.ts",
+        "name": "target"
+      },
+      "expect": "clamp-cap"
+    },
+    {
+      "id": "late-module-load",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "the module throws after registering the named test",
+      "test": {
+        "file": "test/lateload.test.ts",
+        "name": "target"
+      }
+    },
+    {
+      "id": "self-term",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "the process gets SIGTERM after the assertion",
+      "test": {
+        "file": "test/sig-sigterm.test.ts",
+        "name": "target"
+      }
+    },
+    {
+      "id": "self-int",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "the process gets SIGINT after the assertion",
+      "test": {
+        "file": "test/sig-sigint.test.ts",
+        "name": "target"
+      }
+    },
+    {
+      "id": "async-late",
+      "file": "src/lib.ts",
+      "find": "  if (n > max) return max;\n",
+      "replace": "",
+      "row": "self",
+      "expect": "clamp-cap",
+      "why": "stated limit: the named test fails genuinely, then the module throws after an awaited test",
+      "test": {
+        "file": "test/asyncload.test.ts",
+        "name": "target"
+      }
+    }
+  ],
+  "retired": [
+    {
+      "id": "old",
+      "reason": "fixture: shows a retired entry is listed"
+    }
+  ]
+}

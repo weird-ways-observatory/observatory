@@ -1,0 +1,785 @@
+{
+  "mutants": [
+    {
+      "id": "r1-1-outcome-coerced-to-string",
+      "row": "r1#1",
+      "file": "src/ops.ts",
+      "find": "if (typeof r.outcome !== \"string\" || !Object.hasOwn(RESULT_WHY, r.outcome))",
+      "replace": "if (!Object.hasOwn(RESULT_WHY, String(r.outcome)))",
+      "why": "A (card 1a272a5c): r1#1 outcome coerced to string",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "W7/X3: op and op_result take exact fields; result codes are pinned per outcome"
+      },
+      "expect": "[\"refused\"]"
+    },
+    {
+      "id": "r1-2-tap-reservation-by-upload-time",
+      "row": "r1#2",
+      "file": "src/records.ts",
+      "find": "r.env!.sha256, Date.parse(r.env!.recorded_at), next, shown);",
+      "replace": "r.env!.sha256, o.uploaded.getTime(), next, shown);",
+      "why": "A (card 1a272a5c): r1#2 tap reservation by upload time",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "Codex r1 #2: tap reservation ages are signed time: a request stored 9 minutes late still frees its slots 24 h after it was recorded"
+      },
+      "expect": "3 !== 0"
+    },
+    {
+      "id": "r1-3-op-day-cap-check",
+      "row": "r1#3",
+      "file": "src/runcheck.ts",
+      "find": "  for (const [d, n] of Object.entries(s.days)) if (n > OP_DAY_CAP) out.push(",
+      "replace": "  for (const [d, n] of Object.entries(s.days)) if (false) out.push(",
+      "why": "A (card 1a272a5c): r1#3 op day cap check",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "Codex r1 #3: over 400 op records in a UTC day is cap:op, and the tap pool is untouched"
+      },
+      "expect": "assert.ok(all.includes(\"cap:op:2026-11-05\"))"
+    },
+    {
+      "id": "r1-4-stalled-watermark-hold",
+      "row": "r1#4",
+      "file": "src/runcheck.ts",
+      "find": "    if (o.read! >= hold || (s.through ?? 0) > o.at + RESULT_MS) continue;",
+      "replace": "    continue;",
+      "why": "A (card 1a272a5c): r1#4 stalled-watermark hold",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "Codex r1 #4: a watermark stalled over 7 days lets run-op state go as unsettled, never as incomplete"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "sec-hold-from-recorded-time-not-first-read",
+      "row": "sec",
+      "file": "src/runcheck.ts",
+      "find": "    if (o.read! >= hold ||",
+      "replace": "    if (o.at >= hold ||",
+      "why": "A (card 1a272a5c): sec hold from recorded time, not first read",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "commit security review: an op first read after a week-long backlog is held 7 days from its reading, so its result still links"
+      },
+      "expect": "0 !== 1"
+    },
+    {
+      "id": "r1-4-runs-pruned-under-a-stalled-watermark",
+      "row": "r1#4",
+      "file": "src/runcheck.ts",
+      "find": "  for (const [g, r] of Object.entries(s.runs)) if (r.read! < hold && r.at + RUN_MAX_MS < now - RESULT_MS) delete s.runs[g];",
+      "replace": "",
+      "why": "A (card 1a272a5c): r1#4 runs pruned under a stalled watermark",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "Codex r1 #4: a watermark stalled over 7 days lets run-op state go as unsettled, never as incomplete"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row9-checkorder-records-stage-before-job-check",
+      "row": "row9",
+      "file": "src/records.ts",
+      "find": "  if (request !== g.req || job !== g.job) return { id: `mismatch:${grant}`",
+      "replace": "  g.stages.push(stage);\n  if (request !== g.req || job !== g.job) return { id: `mismatch:${grant}`",
+      "why": "A (card 1a272a5c): row9 checkOrder records stage before job check",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 9 (V7.4): a mismatched approval never counts: not for a run, and not for a tap grant's result (fails on the old checkOrder)"
+      },
+      "expect": "the result is unapproved: the mismatched approval did not count"
+    },
+    {
+      "id": "row1-approval-counted-even-when-order-check-failed",
+      "row": "row1",
+      "file": "src/records.ts",
+      "find": "              if (f) findings.push(f);\n              else if (stage === \"request\")",
+      "replace": "              if (f) findings.push(f);\n              if (stage === \"approval\") onApproval(ops, grant, r.request);\n              if (f) {} else if (stage === \"request\")",
+      "why": "A (card 1a272a5c): row1 approval counted even when order check failed",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 9 (V7.4): a mismatched approval never counts: not for a run, and not for a tap grant's result (fails on the old checkOrder)"
+      },
+      "expect": "op 2 uncovered: no such incident"
+    },
+    {
+      "id": "row8-ops-from-unset-still-covers",
+      "row": "row8",
+      "file": "src/ops.ts",
+      "find": "  if (opsFrom === undefined) return \"run operations are not switched on yet\";\n",
+      "replace": "  if (opsFrom === undefined) opsFrom = 0;\n",
+      "why": "A (card 1a272a5c): row8 OPS_FROM unset still covers -- rewritten to typecheck (B0)",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 1, 8: with OPS_FROM unset, or a run opened before it, or no approval, nothing is covered"
+      },
+      "expect": "null true"
+    },
+    {
+      "id": "row8-request-below-ops-from-covers",
+      "row": "row8",
+      "file": "src/ops.ts",
+      "find": "  if (run.seq < opsFrom) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row8 request below OPS_FROM covers",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 1, 8: with OPS_FROM unset, or a run opened before it, or no approval, nothing is covered"
+      },
+      "expect": "5 true"
+    },
+    {
+      "id": "row1-no-approval-covers",
+      "row": "row1",
+      "file": "src/ops.ts",
+      "find": "  if (!run.approved) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row1 no approval covers",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 1, 8: with OPS_FROM unset, or a run opened before it, or no approval, nothing is covered"
+      },
+      "expect": "1 false"
+    },
+    {
+      "id": "row5-run-request",
+      "row": "row5",
+      "file": "src/ops.ts",
+      "find": "  if (op.run_request !== run.sha) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row5 run_request",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
+      },
+      "expect": "{\"run_request\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}"
+    },
+    {
+      "id": "row5-run-id",
+      "row": "row5",
+      "file": "src/ops.ts",
+      "find": "  if (op.run !== d.run) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row5 run id",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
+      },
+      "expect": "{\"run\":\"run-00000002\"}"
+    },
+    {
+      "id": "row5-card",
+      "row": "row5",
+      "file": "src/ops.ts",
+      "find": "  if (!d.cards.includes(op.card)) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row5 card",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
+      },
+      "expect": "{\"card\":\"00000000\"}"
+    },
+    {
+      "id": "row5-job",
+      "row": "row5",
+      "file": "src/ops.ts",
+      "find": "  if (!d.jobs.includes(op.job)) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row5 job",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
+      },
+      "expect": "{\"job\":\"cf.zone.read\"}"
+    },
+    {
+      "id": "row5-zone",
+      "row": "row5",
+      "file": "src/ops.ts",
+      "find": "  if (Object.hasOwn(op.params, \"zone\") && !d.zones",
+      "replace": "  if (false && !d.zones",
+      "why": "A (card 1a272a5c): row5 zone",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
+      },
+      "expect": "{\"params\":{\"zone\":\"other.com\"}}"
+    },
+    {
+      "id": "row5-template",
+      "row": "row5",
+      "file": "src/ops.ts",
+      "find": "  if (op.template !== d.template) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row5 template",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
+      },
+      "expect": "{\"template\":2}"
+    },
+    {
+      "id": "row7-deadline",
+      "row": "row7",
+      "file": "src/ops.ts",
+      "find": "  if (at >= d.deadline) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row7 deadline",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
+      },
+      "expect": "{}"
+    },
+    {
+      "id": "row6-budget",
+      "row": "row6",
+      "file": "src/ops.ts",
+      "find": "  if (run.ops >= d.budget) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row6 budget",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 6: budget counts unique ops; the one past it is uncovered; a second record for one op is a duplicate, not a unit"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row6-duplicate-op-counts-a-unit",
+      "row": "row6",
+      "file": "src/runcheck.ts",
+      "find": "  if (Object.hasOwn(s.seen, op.grant)) return [{ id: `duplicate:o:${op.grant}:op`",
+      "replace": "  if (false) return [{ id: `duplicate:o:${op.grant}:op`",
+      "why": "A (card 1a272a5c): row6 duplicate op counts a unit",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 6: budget counts unique ops; the one past it is uncovered; a second record for one op is a duplicate, not a unit"
+      },
+      "expect": "assert.ok(ids.includes(\"duplicate:o:op-0000000001:op\"))"
+    },
+    {
+      "id": "row2-any-job-opens-a-run",
+      "row": "row2",
+      "file": "src/runcheck.ts",
+      "find": "  if (job !== RUN_OPEN_JOB) return;",
+      "replace": "",
+      "why": "A (card 1a272a5c): row2 any job opens a run",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 2, 3: an ordinary grant, or a run-open request carrying more than the descriptor, covers nothing; an unknown run is unlinked"
+      },
+      "expect": "''"
+    },
+    {
+      "id": "row3-params-beyond-the-descriptor",
+      "row": "row3",
+      "file": "src/runcheck.ts",
+      "find": "Object.keys(p).length === 1 && ",
+      "replace": "",
+      "why": "A (card 1a272a5c): row3 params beyond the descriptor",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 2, 3: an ordinary grant, or a run-open request carrying more than the descriptor, covers nothing; an unknown run is unlinked"
+      },
+      "expect": "''"
+    },
+    {
+      "id": "row3-canonical-re-encode",
+      "row": "row3",
+      "file": "src/ops.ts",
+      "find": "if (!obj(d) || canonical(d) !== text)",
+      "replace": "if (!obj(d))",
+      "why": "A (card 1a272a5c): row3 canonical re-encode",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row3-exact-fields",
+      "row": "row3",
+      "file": "src/ops.ts",
+      "find": "if (!exactly(d, [\"account\"",
+      "replace": "if (!exactly(d, Object.keys(d)) && !exactly(d, [\"account\"",
+      "why": "A (card 1a272a5c): row3 exact fields -- rewritten to typecheck (B0)",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row4-deadline-cap",
+      "row": "row4",
+      "file": "src/ops.ts",
+      "find": "requestAt + 1, requestAt + RUN_MAX_MS)",
+      "replace": "requestAt + 1)",
+      "why": "A (card 1a272a5c): row4 deadline cap",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
+      },
+      "expect": "'[object Object]'"
+    },
+    {
+      "id": "row4-budget-cap",
+      "row": "row4",
+      "file": "src/ops.ts",
+      "find": "if (!int(d.budget, 1, RUN_BUDGET_MAX))",
+      "replace": "if (!int(d.budget, 1))",
+      "why": "A (card 1a272a5c): row4 budget cap",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
+      },
+      "expect": "'[object Object]'"
+    },
+    {
+      "id": "row11-run-kept-only-in-the-grant-map",
+      "row": "row11",
+      "file": "src/runcheck.ts",
+      "find": "  const run = Object.hasOwn(s.runs, op.run_grant) ? s.runs[op.run_grant] : undefined;",
+      "replace": "  const run = Object.hasOwn(s.runs, op.run_grant) && grantJob(op.run_grant) ? s.runs[op.run_grant] : undefined;",
+      "why": "A (card 1a272a5c): row11 run kept only in the grant map",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 11: the run is remembered when the grant map is full"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row12-every-run-counts-as-complete",
+      "row": "row12",
+      "file": "src/records.ts",
+      "find": "verdict === \"ran\" && checked < PAGE && ended && tailClear",
+      "replace": "true",
+      "why": "A (card 1a272a5c): row12 every run counts as complete",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 12, 20 (W4, X2): no result after 24 h is incomplete only once a complete read passes it; gaps and higher numbers wait"
+      },
+      "expect": "assert.ok(has(w.ids(), \"gap\").length && !has(w.ids(), \"op-incomplete\").length)"
+    },
+    {
+      "id": "row12-20-tail-listing-ignored",
+      "row": "row12/20",
+      "file": "src/records.ts",
+      "find": "          tailClear = !higher && !cursor;",
+      "replace": "          tailClear = true;",
+      "why": "A (card 1a272a5c): row12/20 tail listing ignored",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "rows 12, 20 (W4, X2): no result after 24 h is incomplete only once a complete read passes it; gaps and higher numbers wait"
+      },
+      "expect": "assert.ok(has(w.ids(), \"gap\").length && !has(w.ids(), \"op-incomplete\").length)"
+    },
+    {
+      "id": "row13-result-linkage",
+      "row": "row13",
+      "file": "src/runcheck.ts",
+      "find": "  if (r.op !== o.sha || r.run !== o.run || r.job !== o.job) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row13 result linkage",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 13: late, mismatched, duplicate and orphan results are findings; only a valid result clears the op"
+      },
+      "expect": "The expression evaluated to a falsy value:"
+    },
+    {
+      "id": "row13-24-h-result-window",
+      "row": "row13",
+      "file": "src/runcheck.ts",
+      "find": "  if (at - o.at > RESULT_MS) return",
+      "replace": "  if (false) return",
+      "why": "A (card 1a272a5c): row13 24 h result window",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 13: late, mismatched, duplicate and orphan results are findings; only a valid result clears the op"
+      },
+      "expect": "assert.ok(has(ids, \"op-late:op-cccccccc\").length)"
+    },
+    {
+      "id": "row13-second-result",
+      "row": "row13",
+      "file": "src/runcheck.ts",
+      "find": "    if (end === \"result\") return",
+      "replace": "    if (false) return",
+      "why": "A (card 1a272a5c): row13 second result",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 13: late, mismatched, duplicate and orphan results are findings; only a valid result clears the op"
+      },
+      "expect": "assert.ok(ids.includes(\"duplicate:o:op-bbbbbbbb:op_result\"))"
+    },
+    {
+      "id": "row14-late-stored-op-covered",
+      "row": "row14",
+      "file": "src/records.ts",
+      "find": "              if (stage === \"op\") findings.push(await badOp(next, grant));",
+      "replace": "",
+      "why": "A (card 1a272a5c): row14 late-stored op covered",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 14 (X1): an op stored 11 minutes late is never covered; a late-stored result never resolves its op"
+      },
+      "expect": "late op uncovered: no such incident"
+    },
+    {
+      "id": "row15-ids-in-alert-text",
+      "row": "row15",
+      "file": "src/runcheck.ts",
+      "find": "export const fp = async (id: string) => `#${(await sha256(id)).slice(0, 16)}`;",
+      "replace": "export const fp = async (id: string) => id;",
+      "why": "A (card 1a272a5c): row15 ids in alert text",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 15: alert text names ops and runs by fingerprint, never by id, run name or zone"
+      },
+      "expect": "op-0000000001"
+    },
+    {
+      "id": "row16-op-reservations-not-counted",
+      "row": "row16",
+      "file": "src/ops.ts",
+      "find": "  const opHeld = ops.filter((o) => now - o.at <= RESULT_MS).length;",
+      "replace": "  const opHeld = 0;",
+      "why": "A (card 1a272a5c): row16 op reservations not counted",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 16 (X4): 200 open ops today fill the op pool; one tap request is 4 of the tap pool; neither borrows"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row16-one-shared-pool-day-count",
+      "row": "row16",
+      "file": "src/records.ts",
+      "find": "        if (isOpStage(stage)) ops.days[d] = (ops.days[d] ?? 0) + 1; // each pool counted apart\n        else days[d]",
+      "replace": "        days[d]",
+      "why": "A (card 1a272a5c): row16 one shared pool day count",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 16 (X4): 200 open ops today fill the op pool; one tap request is 4 of the tap pool; neither borrows"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row17-80-level",
+      "row": "row17",
+      "file": "src/runcheck.ts",
+      "find": ": used >= 0.8 * cap ? 80 : 0",
+      "replace": ": 0",
+      "why": "A (card 1a272a5c): row17 80% level",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 17: storage alerts at 80/90% for the run cutoff and tap capacity; runway only after 7 full days"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row17-runway-waits-7-days",
+      "row": "row17",
+      "file": "src/runcheck.ts",
+      "find": "    if (days < 7 || rate <= 0) continue;",
+      "replace": "    if (rate <= 0) continue;",
+      "why": "A (card 1a272a5c): row17 runway waits 7 days",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 17: storage alerts at 80/90% for the run cutoff and tap capacity; runway only after 7 full days"
+      },
+      "expect": "+ actual - expected"
+    },
+    {
+      "id": "row18-pre-a-state",
+      "row": "row18",
+      "file": "src/runcheck.ts",
+      "find": "    runs: bare(o.runs), open: bare(o.open)",
+      "replace": "    runs: o.runs as never, open: o.open as never",
+      "why": "A (card 1a272a5c): row18 pre-A state",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 18 (W6): a state from before A loads with empty run-op state and raises nothing new"
+      },
+      "expect": "pre-A state loads empty runs"
+    },
+    {
+      "id": "w7-extra-op-fields",
+      "row": "W7",
+      "file": "src/ops.ts",
+      "find": "    if (!exactly(r, [\"v\", \"grant\", \"stage\", \"job\", \"run_grant\"",
+      "replace": "    if (!exactly(r, Object.keys(r)) && !exactly(r, [\"v\", \"grant\", \"stage\", \"job\", \"run_grant\"",
+      "why": "A (card 1a272a5c): W7 extra op fields -- rewritten to typecheck (B0)",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "W7/X3: op and op_result take exact fields; result codes are pinned per outcome"
+      },
+      "expect": "true !== false"
+    },
+    {
+      "id": "x3-why-codes-per-outcome",
+      "row": "X3",
+      "file": "src/ops.ts",
+      "find": ": !RESULT_WHY[r.outcome as string].includes(r.why as string))",
+      "replace": ": typeof r.why !== \"string\")",
+      "why": "A (card 1a272a5c): X3 why codes per outcome",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "W7/X3: op and op_result take exact fields; result codes are pinned per outcome"
+      },
+      "expect": "true !== false"
+    },
+    {
+      "id": "approval-not-bound-to-the-run-s-request",
+      "row": "row1",
+      "file": "src/runcheck.ts",
+      "find": " && s.runs[grant].sha === request) s.runs[grant].approved = true;",
+      "replace": ") s.runs[grant].approved = true;",
+      "why": "A (card 1a272a5c): approval not bound to the run's request",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 1: onApproval marks a run approved only by an approval naming the run's own request"
+      },
+      "expect": "an approval naming another request does not approve the run"
+    },
+    {
+      "id": "reused-run-id-not-voided",
+      "row": "row1",
+      "file": "src/runcheck.ts",
+      "find": "  if (Object.hasOwn(s.runs, grant)) return void Object.assign(s.runs[grant], { descriptor: \"run-open grant id was used twice\", approved: false });\n",
+      "replace": "  if (Object.hasOwn(s.runs, grant)) return;\n",
+      "why": "A (card 1a272a5c): reused run id not voided",
+      "test": {
+        "file": "test/ops.test.ts",
+        "name": "row 1 (commit security review): a reused run-open grant id voids the run; its new approval never approves the old descriptor"
+      },
+      "expect": "The expression evaluated to a falsy value:"
+    },
+    {
+      "id": "harness-anchor-once",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (count !== 1) return",
+      "replace": "    if (count < 1) return",
+      "why": "harness rule (card 0d001fc3): a duplicate anchor must not count",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant duplicate-anchor"
+      },
+      "expect": "fixture duplicate-anchor output"
+    },
+    {
+      "id": "harness-baseline",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (!b.event.ok) return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3): the unmutated designated test must pass first",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant baseline-fails"
+      },
+      "expect": "fixture baseline-fails output"
+    },
+    {
+      "id": "harness-typecheck",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (tsc.status !== 0) return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3): a mutant that does not typecheck must not count",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant compile-error"
+      },
+      "expect": "fixture compile-error output"
+    },
+    {
+      "id": "harness-assertion-only",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (e?.name !== \"AssertionError\" || e?.code !== \"ERR_ASSERTION\") return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3): a non-assertion failure must not count",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant runtime-throw"
+      },
+      "expect": "fixture runtime-throw output"
+    },
+    {
+      "id": "harness-message",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (!e.message.includes(m.expect)) return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3): the named assertion message must match",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant wrong-message"
+      },
+      "expect": "fixture wrong-message output"
+    },
+    {
+      "id": "harness-no-other-tests",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (other.length) {",
+      "replace": "  if (false) {",
+      "why": "harness rule (card 0d001fc3): a test from another file must not pass unnoticed beside the named one",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant imported-test"
+      },
+      "expect": "fixture imported-test output"
+    },
+    {
+      "id": "harness-exactly-one",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (mine.length !== 1) return",
+      "replace": "  if (mine.length > 1) return",
+      "why": "harness rule (card 0d001fc3): zero selected tests must not count",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant zero-tests"
+      },
+      "expect": "fixture zero-tests output"
+    },
+    {
+      "id": "harness-child-context",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  const { NODE_TEST_CONTEXT: _, ...env } = process.env;",
+      "replace": "  const env = process.env;",
+      "why": "harness rule (card 0d001fc3): under a parent runner the child must still report to the harness",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant kill"
+      },
+      "expect": "fixture kill output"
+    },
+    {
+      "id": "harness-exit-code",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  return bad ? 1 : 0;",
+      "replace": "  return 0;",
+      "why": "harness rule (card 0d001fc3): one uncaught mutant must fail the whole run",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "a whole run fails when any mutant is not caught, and lists retired entries"
+      },
+      "expect": "Expected values to be strictly equal"
+    },
+    {
+      "id": "harness-body-not-hook",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (t.event.failureType !== \"testCodeFailure\") return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a hook's assertion must not count as the test's",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant hook-only"
+      },
+      "expect": "fixture hook-only output"
+    },
+    {
+      "id": "harness-not-skipped",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (mine[0].skip || mine[0].todo) return",
+      "replace": "  if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a skipped baseline must not count as passing",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant skipped-baseline"
+      },
+      "expect": "fixture skipped-baseline output"
+    },
+    {
+      "id": "harness-suite-failures",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "!(e.type === \"suite\" && (e.ok || e.failureType === \"subtestsFailed\"))",
+      "replace": "!(e.type === \"suite\")",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a suite's own failure must not be hidden",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant suite-hook"
+      },
+      "expect": "fixture suite-hook output"
+    },
+    {
+      "id": "harness-file-identity",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "e.type === \"test\" && e.name === test.name && e.file === file",
+      "replace": "e.type === \"test\" && e.name === test.name",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): the named test must be defined in the named file",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant imported-test"
+      },
+      "expect": "fixture imported-test output"
+    },
+    {
+      "id": "harness-signal",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (r.signal) return { why: `killed by ${r.signal}` };\n",
+      "replace": "",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a killed run must not count",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant self-kill"
+      },
+      "expect": "fixture self-kill output"
+    },
+    {
+      "id": "harness-no-symlinks",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "  if (link) return",
+      "replace": "  if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a project holding a symlink must be refused",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "a project holding a symlink is refused, and the file it points at is never written"
+      },
+      "expect": "symlink output"
+    },
+    {
+      "id": "harness-inside-project",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": "    if (!path || !file) return",
+      "replace": "    if (false) return",
+      "why": "harness rule (card 0d001fc3, Codex B0 r1): a file outside the project must be refused",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant escape-path"
+      },
+      "expect": "fixture escape-path output"
+    },
+    {
+      "id": "harness-own-event-file",
+      "row": "B0",
+      "file": "scripts/mutants.mjs",
+      "find": " `--test-reporter-destination=${out}`,",
+      "replace": "",
+      "why": "harness rule (card 0d001fc3): test output on stdout must never be read as test events",
+      "test": {
+        "file": "test/mutants.test.ts",
+        "name": "fixture mutant noisy-stdout"
+      },
+      "expect": "fixture noisy-stdout output"
+    }
+  ],
+  "retired": []
+}

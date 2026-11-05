@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --test 'test/*.test.ts'",
     "typecheck": "tsc",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "mutants": "node scripts/mutants.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261026.1",
