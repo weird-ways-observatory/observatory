@@ -83,9 +83,9 @@ test("row 3/4: the descriptor reads one way only: canonical, exact shape, deadli
   assert.equal(parseDescriptor(JSON.stringify(JSON.parse(desc(t)), null, 1), t), "descriptor is not canonical JSON", "a re-encoded descriptor is accepted");
   assert.equal(parseDescriptor(JSON.stringify({ zones: [], ...JSON.parse(desc(t)) }), t), "descriptor is not canonical JSON"); // key order
   assert.equal(parseDescriptor(desc(t, { extra: 1 }), t), "descriptor has the wrong fields", "a descriptor with an extra field is accepted");
-  assert.match(String(parseDescriptor(desc(t, { deadline: t + 25 * HOUR }), t)), /deadline/);
+  assert.match(String(parseDescriptor(desc(t, { deadline: t + 25 * HOUR }), t)), /deadline/, "a deadline past 24 h was accepted");
   assert.match(String(parseDescriptor(desc(t, { deadline: t }), t)), /deadline/);
-  assert.match(String(parseDescriptor(desc(t, { budget: 51 }), t)), /budget/);
+  assert.match(String(parseDescriptor(desc(t, { budget: 51 }), t)), /budget/, "a budget over 50 was accepted");
   assert.match(String(parseDescriptor(desc(t, { budget: 0 }), t)), /budget/);
   assert.equal(parseDescriptor(desc(t, { jobs: ["cf.token.canary"] }), t), "descriptor jobs");
   assert.equal(parseDescriptor(desc(t, { zones: [ZONE, { ...ZONE, id: "d".repeat(32) }] }), t), "descriptor zones"); // two zones, one name
@@ -97,7 +97,7 @@ test("W7/X3: op and op_result take exact fields; result codes are pinned per out
   const op = (o: object) => validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op", ...opRec("e".repeat(64)), ...o }));
   const res = (o: object) => validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", ...doneRec("e".repeat(64)), ...o }));
   assert.equal(op({}).ok, true);
-  assert.equal(op({ extra: 1 }).ok, false);
+  assert.equal(op({ extra: 1 }).ok, false, "an op with an extra field was accepted");
   assert.equal(op({ params: { zone: ZONE.name, account: ACCOUNT } }).ok, false);
   assert.equal(op({ job: "cf.audit.read", params: { since: "2026-11-01T00:00:00Z", until: "2026-11-02T00:00:00Z" } }).ok, true);
   assert.equal(op({ job: "cf.audit.read", params: { since: "yesterday", until: "2026-11-02T00:00:00Z" } }).ok, false);
@@ -106,7 +106,7 @@ test("W7/X3: op and op_result take exact fields; result codes are pinned per out
   assert.equal(res({ answer_sha256: undefined }).ok, false); // done needs the answer hash
   assert.equal(res({ why: "stopped" }).ok, false); // and no why
   assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome: "refused", why: "budget_spent" })).ok, true);
-  assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome: "refused", why: "provider_timeout" })).ok, false);
+  assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome: "refused", why: "provider_timeout" })).ok, false, "an op_result why code not pinned to its outcome was accepted");
   assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome: "released", why: "stopped" })).ok, false);
   // Codex r1 #1: the outcome is a string, never coerced: ["refused"] is not "refused".
   for (const outcome of [["refused"], { toString: null }, 1, null]) assert.equal(validateOp(JSON.stringify({ v: 1, grant: OP, stage: "op_result", job: "cf.dns.list", run: RUN, op: "e".repeat(64), outcome, why: "budget_spent" })).ok, false, JSON.stringify(outcome));
@@ -141,7 +141,7 @@ test("rows 1, 8: with OPS_FROM unset, or a run opened before it, or no approval,
     await w.put(OP, "op", opRec(req), NOW - 2 * HOUR);
     await w.run(NOW, opsFrom);
     const f = w.incidents().find((i) => i.id === `op-uncovered:${OP}`);
-    assert.match(f?.text ?? "", new RegExp(why), `${opsFrom} ${approve}`);
+    assert.match(f?.text ?? "", new RegExp(why), `coverage case opsFrom=${opsFrom} approve=${approve}`);
   }
 });
 
@@ -188,8 +188,8 @@ test("rows 2, 3: an ordinary grant, or a run-open request carrying more than the
   await w.put("op-nowhere01", "op", opRec("e".repeat(64), { run_grant: "runopen-9999" }), NOW - 2 * HOUR);
   await w.run(NOW);
   const text = (id: string) => w.incidents().find((i) => i.id === id)?.text ?? "";
-  assert.match(text("op-uncovered:op-tapgrant1"), /not a run-open request/);
-  assert.match(text("op-uncovered:op-wideparam"), /more than the descriptor/);
+  assert.match(text("op-uncovered:op-tapgrant1"), /not a run-open request/, "a tap grant opened a run");
+  assert.match(text("op-uncovered:op-wideparam"), /more than the descriptor/, "params beyond the descriptor were covered");
   assert.match(text("op-unlinked:op-nowhere01"), /no run-open request/);
 });
 
@@ -204,7 +204,7 @@ test("rows 5, 7: every field outside the descriptor is its own reason; so is an 
     const t = NOW - 5 * HOUR, req = await openRun(w, t);
     await w.put(OP, "op", opRec(req, over), t + 2 * MIN + after);
     await w.run(NOW);
-    assert.match(w.incidents().find((i) => i.id === `op-uncovered:${OP}`)?.text ?? "", why, JSON.stringify(over));
+    assert.match(w.incidents().find((i) => i.id === `op-uncovered:${OP}`)?.text ?? "", why, `uncovered case ${JSON.stringify(over)}`);
   }
 });
 
@@ -380,7 +380,7 @@ test("Codex r1 #2: tap reservation ages are signed time: a request stored 9 minu
   const t = NOW - DAY - 5 * MIN; // recorded 24 h 5 min ago, uploaded 23 h 56 min ago
   await w.put("grant-0001", "request", { job: "cf.token.canary" }, t, 9 * MIN);
   const r = await w.run(NOW);
-  assert.equal(r.ops.pools_today.tap, 0);
+  assert.equal(r.ops.pools_today.tap, 0, "a tap reservation was timed by upload, not recorded_at");
 });
 
 test("Codex r1 #3: over 400 op records in a UTC day is cap:op, and the tap pool is untouched", async () => {
@@ -415,7 +415,7 @@ test("commit security review: an op first read after a week-long backlog is held
   const op = await w.put(OP, "op", opRec(req), t + 2 * MIN);
   w.b.store.set(`records/v1/000000999999.grant-0009.request.json`, { body: "x", uploaded: new Date(NOW) }); // holds the watermark
   let r = await w.run(NOW); // first read of the op, 8 days after it was recorded
-  assert.equal(r.ops.ops_open, 1);
+  assert.equal(r.ops.ops_open, 1, "an op hold was timed from first read, not recorded_at");
   await w.put(OP, "op_result", doneRec(op.sha), t + 3 * MIN);
   r = await w.run(NOW + HOUR);
   assert.equal(r.ops.results, 1);

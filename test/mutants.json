@@ -24,7 +24,7 @@
         "file": "test/ops.test.ts",
         "name": "Codex r1 #2: tap reservation ages are signed time: a request stored 9 minutes late still frees its slots 24 h after it was recorded"
       },
-      "expect": "3 !== 0"
+      "expect": "a tap reservation was timed by upload, not recorded_at"
     },
     {
       "id": "r1-3-op-day-cap-check",
@@ -63,7 +63,7 @@
         "file": "test/ops.test.ts",
         "name": "commit security review: an op first read after a week-long backlog is held 7 days from its reading, so its result still links"
       },
-      "expect": "0 !== 1"
+      "expect": "an op hold was timed from first read, not recorded_at"
     },
     {
       "id": "r1-4-runs-pruned-under-a-stalled-watermark",
@@ -115,7 +115,7 @@
         "file": "test/ops.test.ts",
         "name": "rows 1, 8: with OPS_FROM unset, or a run opened before it, or no approval, nothing is covered"
       },
-      "expect": "null true"
+      "expect": "coverage case opsFrom=null approve=true"
     },
     {
       "id": "row8-request-below-ops-from-covers",
@@ -128,7 +128,7 @@
         "file": "test/ops.test.ts",
         "name": "rows 1, 8: with OPS_FROM unset, or a run opened before it, or no approval, nothing is covered"
       },
-      "expect": "5 true"
+      "expect": "coverage case opsFrom=5 approve=true"
     },
     {
       "id": "row1-no-approval-covers",
@@ -141,7 +141,7 @@
         "file": "test/ops.test.ts",
         "name": "rows 1, 8: with OPS_FROM unset, or a run opened before it, or no approval, nothing is covered"
       },
-      "expect": "1 false"
+      "expect": "coverage case opsFrom=1 approve=false"
     },
     {
       "id": "row5-run-request",
@@ -232,7 +232,7 @@
         "file": "test/ops.test.ts",
         "name": "rows 5, 7: every field outside the descriptor is its own reason; so is an op after the deadline"
       },
-      "expect": "{}"
+      "expect": "uncovered case {}"
     },
     {
       "id": "row6-budget",
@@ -271,7 +271,7 @@
         "file": "test/ops.test.ts",
         "name": "rows 2, 3: an ordinary grant, or a run-open request carrying more than the descriptor, covers nothing; an unknown run is unlinked"
       },
-      "expect": "''"
+      "expect": "a tap grant opened a run"
     },
     {
       "id": "row3-params-beyond-the-descriptor",
@@ -284,7 +284,7 @@
         "file": "test/ops.test.ts",
         "name": "rows 2, 3: an ordinary grant, or a run-open request carrying more than the descriptor, covers nothing; an unknown run is unlinked"
       },
-      "expect": "''"
+      "expect": "params beyond the descriptor were covered"
     },
     {
       "id": "row3-canonical-re-encode",
@@ -323,7 +323,7 @@
         "file": "test/ops.test.ts",
         "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
       },
-      "expect": "'[object Object]'"
+      "expect": "a deadline past 24 h was accepted"
     },
     {
       "id": "row4-budget-cap",
@@ -336,7 +336,7 @@
         "file": "test/ops.test.ts",
         "name": "row 3/4: the descriptor reads one way only: canonical, exact shape, deadline within 24 h, budget 1..50"
       },
-      "expect": "'[object Object]'"
+      "expect": "a budget over 50 was accepted"
     },
     {
       "id": "row11-run-kept-only-in-the-grant-map",
@@ -518,7 +518,7 @@
         "file": "test/ops.test.ts",
         "name": "W7/X3: op and op_result take exact fields; result codes are pinned per outcome"
       },
-      "expect": "true !== false"
+      "expect": "an op with an extra field was accepted"
     },
     {
       "id": "x3-why-codes-per-outcome",
@@ -531,7 +531,7 @@
         "file": "test/ops.test.ts",
         "name": "W7/X3: op and op_result take exact fields; result codes are pinned per outcome"
       },
-      "expect": "true !== false"
+      "expect": "an op_result why code not pinned to its outcome was accepted"
     },
     {
       "id": "approval-not-bound-to-the-run-s-request",
