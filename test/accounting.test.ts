@@ -320,6 +320,19 @@ test("T15: a pending op stored on a later day is charged to the op pool, never t
   assert.deepEqual([meta(st).op_used, meta(st).used], [1 + 1, (STAGE_SLOTS - 1) + STAGE_SLOTS], "op re-charged to the wrong pool");
 });
 
+test("T15: a pending op meets a full op pool on its new day: it waits (503), the tap pool untouched", async () => {
+  const { l, st } = ledger();
+  await opened(l, "grant-op-10", "2026-11-01T12:00:00Z");
+  const body = JSON.stringify({ v: 2, seq: 2, grant: "op-0002", stage: "op", recorded_at: "2026-11-01T23:59:00.000Z", sha256: "e".repeat(64), body: "{}" });
+  const receipt = { v: 1, seq: 2, key: "records/v1/000000000002.op-0002.op.json", grant: "op-0002", stage: "op", sha256: "e".repeat(64), recorded_at: "2026-11-01T23:59:00.000Z" };
+  st.m.set("g:op-0002", { job: "x", request: "e".repeat(64), opened: ms("2026-11-01T23:59:00Z"), stages: { op: receipt } });
+  st.m.set("pending", { key: receipt.key, stored: body, storedSha: await sha256(body), receipt, day: "2026-11-01", pool: "op" });
+  st.m.set("meta", { ...meta(st), seq: 2, day: "2026-11-02", used: STAGE_SLOTS - 1, op_used: OP_DAY_CAP, op_open: [{ op: "op-0002", at: ms("2026-11-01T23:59:00Z"), left: 1 }] });
+  const out = await l.accept(rec("request", "grant-op-11"), T("2026-11-02T00:02:00Z"));
+  assert.deepEqual(out, { status: 503, why: `today's ${OP_DAY_CAP} op slots are taken; the pending record waits` }, "a pending op was stored past a full op pool");
+  assert.deepEqual([meta(st).used, meta(st).op_used, st.m.has("pending")], [STAGE_SLOTS - 1, OP_DAY_CAP, true]);
+});
+
 // ---- AB1: recorder status vs the checker's poolUse while a record is pending ----
 
 test("AB1: absent request, same day: +4 (q + 3)", async () => {

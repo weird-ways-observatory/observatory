@@ -1026,6 +1026,19 @@
         "name": "a pool refusal is counted as tap_pool_full; a full budget as budget_full"
       },
       "expect": "429 reasons not told apart"
+    },
+    {
+      "id": "b1-t15-op-pool-cap-ignored",
+      "row": "T15",
+      "file": "src/recorder/ledger.ts",
+      "find": "if ((m.op_used ?? 0) + 1 > OP_DAY_CAP) return",
+      "replace": "if ((m.op_used ?? 0) + 1 > OP_DAY_CAP * 2) return",
+      "why": "B1 (card 509a5d85): a pending op re-charged at midnight is stored past a full op pool",
+      "test": {
+        "file": "test/accounting.test.ts",
+        "name": "T15: a pending op meets a full op pool on its new day: it waits (503), the tap pool untouched"
+      },
+      "expect": "a pending op was stored past a full op pool"
     }
   ],
   "retired": []
