@@ -39,6 +39,9 @@ export const READ_DEADLINE = 10_000; // per source, body included: both stalled 
 const ADVERT = "application/x-git-upload-pack-advertisement";
 const MAX_BODY = 256 * 1024;
 const HEADERS = { "User-Agent": "observatory-freshness" };
+// Capabilities: names per the spec's cap-list, single spaces between; a value after "=" (symref=HEAD:refs/heads/main,
+// agent=git/...) is printable ASCII without spaces. Nothing else -- no NUL, LF or markup -- may hide behind the NUL.
+const CAPS = /^[a-z0-9_-]+(=[\x21-\x7e]+)?( [a-z0-9_-]+(=[\x21-\x7e]+)?)*$/;
 type Fetch = (req: Request) => Promise<Response>;
 
 /** The body, refused past `max` bytes. Reading stops at the request's deadline like the fetch itself. */
@@ -90,8 +93,11 @@ export function mainFromAdvert(body: Uint8Array): string {
     if (pkt === null) throw new Error("flush inside the ref list");
     let rec = pkt.endsWith("\n") ? pkt.slice(0, -1) : pkt;
     const nul = rec.indexOf("\0");
+    // The spec requires the capability list behind a NUL on the first ref, and only there (Codex build r1).
+    if (i === 0 && nul < 0) throw new Error("no capabilities on the first ref");
     if (nul >= 0) {
       if (i !== 0) throw new Error("capabilities after the first ref");
+      if (!CAPS.test(rec.slice(nul + 1))) throw new Error("bad capability list");
       rec = rec.slice(0, nul);
     }
     // `<sha> refs/tags/v1^{}` (a peeled annotated tag) is a valid record that is never main (H1).

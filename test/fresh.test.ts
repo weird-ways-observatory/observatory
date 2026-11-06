@@ -125,10 +125,12 @@ test("git refusals: anything but one exact main record in a well-formed advertis
     ["only refs/heads/mainline", gitReply(advert([head, `${LIVE} refs/heads/mainline\n`]))],
     ["only refs/heads/main^{}", gitReply(advert([head, `${LIVE} refs/heads/main^{}\n`]))],
     ["two main records", gitReply(advert([head, main, `${AHEAD} refs/heads/main\n`]))],
-    ["capabilities on a later ref", gitReply(advert([`${LIVE} HEAD\n`, `${LIVE} refs/heads/main\0multi_ack\n`]))],
+    ["capabilities on a later ref", gitReply(advert([head, `${LIVE} refs/heads/main\0multi_ack\n`]))],
+    ["no capabilities on the first ref", gitReply(advert([`${LIVE} refs/heads/main\n`, `${LIVE} refs/tags/v1\n`]))],
+    ["markup hidden behind the capability NUL", gitReply(advert([`${LIVE} refs/heads/main\0multi_ack\n<html>oops</html>\0\n`]))],
     ["a wrong service line", gitReply(`${pkt("# service=git-receive-pack\n")}0000${pkt(head)}${pkt(main)}0000`)],
-    ["no flush after the service line", gitReply(`${svc}${pkt(head)}${pkt(main)}${pkt(`${LIVE} refs/tags/v1\n`)}0000`)],
-    ["no final flush", gitReply(`${svc}0000${pkt(main)}${pkt(`${LIVE} refs/tags/v1\n`)}`)],
+    ["no flush after the service line", gitReply(`${svc}${pkt(head)}${pkt(`${LIVE} refs/heads/main\0multi_ack\n`)}${pkt(`${LIVE} refs/tags/v1\n`)}0000`)],
+    ["no final flush", gitReply(`${svc}0000${pkt(`${LIVE} refs/heads/main\0multi_ack\n`)}${pkt(`${LIVE} refs/tags/v1\n`)}`)],
     ["a packet longer than git allows", gitReply(advert([head, main, `${LIVE} refs/tags/${"x".repeat(65469)}\n`]))], // 65525: 4 hex digits, over 65520
     ["a truncated packet", gitReply(advert([head, main]).slice(0, -10))],
     ["bytes left over after the final flush", gitReply(`${advert([head, main])}00`)],
@@ -175,6 +177,19 @@ test("G3: both stall: an error naming both within two deadlines, so the verdict 
   const main = await readMain(stall, 50);
   assert.ok(Date.now() - t0 < 500, "a read has no deadline");
   assert.deepEqual(main, { error: "git timed out; GitHub timed out" });
+});
+
+test("G3: an API body that stalls after its headers is cut off by its deadline too", async () => {
+  const keepAlive = setTimeout(() => undefined, 1000);
+  const t0 = Date.now();
+  const main = await readMain(async (req) => {
+    if (new URL(req.url).hostname === "github.com") return new Response("{}", { status: 500 });
+    const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("bbbb")); req.signal.addEventListener("abort", () => c.error(req.signal.reason)); } });
+    return new Response(body);
+  }, 50);
+  clearTimeout(keepAlive);
+  assert.ok(Date.now() - t0 < 500, "the API body has no deadline");
+  assert.deepEqual(main, { error: "git answered 500; GitHub timed out" });
 });
 
 test("G3: a git body that stalls after its headers is cut off by the same deadline", async () => {

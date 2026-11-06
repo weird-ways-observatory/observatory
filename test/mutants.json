@@ -1273,6 +1273,32 @@
         "name": "G3: both stall: an error naming both within two deadlines, so the verdict is still written"
       },
       "expect": "a read has no deadline"
+    },
+    {
+      "id": "c7-16-capability-list",
+      "row": "build r1#1",
+      "file": "src/fresh.ts",
+      "find": "      if (!CAPS.test(rec.slice(nul + 1))) throw new Error(\"bad capability list\");\n",
+      "replace": "",
+      "why": "c7be60fc: Codex build r1 #1: anything behind the NUL is discarded unchecked",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "markup hidden behind the capability NUL"
+    },
+    {
+      "id": "c7-17-first-ref-capabilities",
+      "row": "build r1#2",
+      "file": "src/fresh.ts",
+      "find": "    if (i === 0 && nul < 0) throw new Error(\"no capabilities on the first ref\");\n",
+      "replace": "",
+      "why": "c7be60fc: Codex build r1 #2: a first ref without the required capability list is accepted",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "no capabilities on the first ref"
     }
   ],
   "retired": []
