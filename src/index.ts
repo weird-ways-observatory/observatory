@@ -8,9 +8,6 @@ import { runNight, type Env } from "./copy.ts";
 import { deliveryTest } from "./alert.ts";
 import { FRESH_CRON, runFresh, type FreshEnv } from "./fresh.ts";
 import { runRecords, type RecordsEnv } from "./records.ts";
-// DELIBERATE BUILD FAILURE (Build R 2c19a923 needs list N4, Ben 2026-11-06 "we can test"): this file does not
-// exist, so the hosted build must fail and nothing deploys. Reverted by the very next PR.
-import "./buildr-hosted-failure-test-missing.ts";
 
 export const NIGHT_CRON = "15 3 * * *";
 
