@@ -29,10 +29,101 @@ export interface State {
 export type Verdict = "healthy" | "waiting" | "not-live" | "unverified";
 export type Main = { sha: string } | { error: string };
 
-/** main's head commit from the public GitHub API. Any failure, a rate limit included, is an error. */
-export async function readMain(fetchFn: (req: Request) => Promise<Response>): Promise<Main> {
+// Card c7be60fc: the API's anonymous quota (60 an hour per address) is shared with every Worker on the same
+// outgoing address, so it ran out in about half the hours. main is read first with git's own protocol, the
+// request `git ls-remote` makes; the API is asked only when that read fails. No credential either way
+// (DESIGN-watch-home 3a). If the repo is renamed or moved, this URL changes in the same change: redirects
+// are not followed, so a moved repo is an error here and the API by id still answers.
+export const GIT_URL = "https://github.com/weird-ways-observatory/observatory.git/info/refs?service=git-upload-pack";
+export const READ_DEADLINE = 10_000; // per source, body included: both stalled is still well inside a cron run
+const ADVERT = "application/x-git-upload-pack-advertisement";
+const MAX_BODY = 256 * 1024;
+const HEADERS = { "User-Agent": "observatory-freshness" };
+type Fetch = (req: Request) => Promise<Response>;
+
+/** The body, refused past `max` bytes. Reading stops at the request's deadline like the fetch itself. */
+async function capped(res: Response, max: number): Promise<Uint8Array> {
+  const out = new Uint8Array(max);
+  let n = 0;
+  const reader = res.body?.getReader();
+  for (let r = await reader?.read(); r && !r.done; r = await reader!.read()) {
+    if (n + r.value.length > max) {
+      await reader!.cancel();
+      throw new Error("reply too large");
+    }
+    out.set(r.value, n);
+    n += r.value.length;
+  }
+  return out.subarray(0, n);
+}
+
+/** A git smart-HTTP body as pkt-lines (gitprotocol-http, frozen copy in studio-os docs/house-style/frozen):
+ * each a 4-digit lowercase hex length that counts itself, 0000 = flush (null). Anything left over or short
+ * is an error. */
+export function pktLines(body: Uint8Array): (string | null)[] {
+  const text = new TextDecoder("latin1").decode(body); // one char per byte, so lengths stay byte lengths
+  const out: (string | null)[] = [];
+  for (let i = 0; i < text.length; ) {
+    const head = text.slice(i, i + 4);
+    if (!/^[0-9a-f]{4}$/.test(head)) throw new Error("bad packet length");
+    const len = parseInt(head, 16);
+    if (len === 0) {
+      out.push(null);
+      i += 4;
+      continue;
+    }
+    if (len < 4 || len > 65520 || i + len > text.length) throw new Error("bad packet length");
+    out.push(text.slice(i + 4, i + len));
+    i += len;
+  }
+  return out;
+}
+
+/** main's sha from a git ref advertisement. Only an exact `refs/heads/main` record counts, and only one. */
+export function mainFromAdvert(body: Uint8Array): string {
+  const p = pktLines(body);
+  if (p[0] !== "# service=git-upload-pack\n" && p[0] !== "# service=git-upload-pack") throw new Error("no service line");
+  if (p[1] !== null) throw new Error("no flush after the service line");
+  if (p.length < 4 || p.at(-1) !== null) throw new Error("no final flush");
+  let main: string | undefined;
+  p.slice(2, -1).forEach((pkt, i) => {
+    if (pkt === null) throw new Error("flush inside the ref list");
+    let rec = pkt.endsWith("\n") ? pkt.slice(0, -1) : pkt;
+    const nul = rec.indexOf("\0");
+    if (nul >= 0) {
+      if (i !== 0) throw new Error("capabilities after the first ref");
+      rec = rec.slice(0, nul);
+    }
+    // `<sha> refs/tags/v1^{}` (a peeled annotated tag) is a valid record that is never main (H1).
+    const m = /^([0-9a-f]{40}) ([^ \0\n]+)$/.exec(rec);
+    if (!m) throw new Error("bad ref record");
+    if (m[2] !== "refs/heads/main") return;
+    if (main) throw new Error("two main records");
+    main = m[1];
+  });
+  if (!main) throw new Error("no refs/heads/main");
+  return main;
+}
+
+/** main's head over git's protocol. A reply that is not exactly a git advertisement is an error. */
+async function readGit(fetchFn: Fetch, deadline: number): Promise<Main> {
+  const req = new Request(GIT_URL, { headers: HEADERS, redirect: "manual", signal: AbortSignal.timeout(deadline) });
+  try {
+    const res = await fetchFn(req);
+    if (res.status !== 200) return { error: `git answered ${res.status}` };
+    if (res.headers.get("content-type") !== ADVERT) return { error: "git reply is not a ref advertisement" };
+    return { sha: mainFromAdvert(await capped(res, MAX_BODY)) };
+  } catch (e) {
+    const why = req.signal.aborted ? "timed out" : e instanceof Error && e.message ? e.message : "unreachable";
+    return { error: `git ${why}` };
+  }
+}
+
+/** main's head from the public GitHub API, by repo id. Any failure, a rate limit included, is an error. */
+async function readApi(fetchFn: Fetch, deadline: number): Promise<Main> {
   const req = new Request(`https://api.github.com/repositories/${REPO_ID}/commits/main`, {
-    headers: { Accept: "application/vnd.github.sha", "User-Agent": "observatory-freshness" },
+    headers: { ...HEADERS, Accept: "application/vnd.github.sha" },
+    signal: AbortSignal.timeout(deadline),
   });
   try {
     const res = await fetchFn(req);
@@ -43,8 +134,17 @@ export async function readMain(fetchFn: (req: Request) => Promise<Response>): Pr
     const sha = (await res.text()).trim();
     return SHA.test(sha) ? { sha } : { error: "GitHub did not return a commit" };
   } catch {
-    return { error: "GitHub unreachable" };
+    return { error: req.signal.aborted ? "GitHub timed out" : "GitHub unreachable" };
   }
+}
+
+/** main's head: git first; the API only when git failed, so the two are never weighed against each other
+ * and the healthier answer is never preferred. Both failing is one error naming both reasons. */
+export async function readMain(fetchFn: Fetch, deadline = READ_DEADLINE): Promise<Main> {
+  const git = await readGit(fetchFn, deadline);
+  if ("sha" in git) return git;
+  const api = await readApi(fetchFn, deadline);
+  return "sha" in api ? api : { error: `${git.error}; ${api.error}` };
 }
 
 /** Whole hours from `iso` to `now`, as "3h". */

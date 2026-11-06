@@ -24,3 +24,7 @@ Agents have no direct route: the old `weird-ways-studio/observatory` address onl
 3. [command] `npx wrangler deploy --dry-run --outdir /tmp/obs-dist` succeeds (run inside sandbox-run)
 4. [command] `python3 ~/studio/studio-os/scripts/public_repo_guard.py observatory --all` passes
 5. [inspect] Every new refusal has a test shown failing with the safeguard removed.
+
+## Renaming or moving this repo
+
+The freshness check reads main at the repo's public address (`GIT_URL` in `src/fresh.ts`, card c7be60fc). A rename or move of this repo updates that constant in the same change: redirects are not followed, so a stale address is an error there (the API by repo id is the fallback), never a silent read of another repo.
