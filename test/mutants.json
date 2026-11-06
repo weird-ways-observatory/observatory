@@ -1078,6 +1078,227 @@
         "name": "AE1: unverified approval, a conflicting object planted at its name, a fault inside the withdrawal: nothing applied; then withdrawn once"
       },
       "expect": "a fault inside the withdrawal left part of it applied"
+    },
+    {
+      "id": "c7-1-git-content-type",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "    if (res.headers.get(\"content-type\") !== ADVERT) return { error: \"git reply is not a ref advertisement\" };\n",
+      "replace": "",
+      "why": "c7be60fc: threat (a): a reply under another content type is parsed",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "a valid advertisement under the wrong content type"
+    },
+    {
+      "id": "c7-2-git-status-200",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "if (res.status !== 200) return",
+      "replace": "if (res.status >= 400) return",
+      "why": "c7be60fc: threat (a): a non-200 success is parsed",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "a valid advertisement under a status other than 200"
+    },
+    {
+      "id": "c7-3-redirect-manual",
+      "row": "(d)",
+      "file": "src/fresh.ts",
+      "find": "redirect: \"manual\", ",
+      "replace": "",
+      "why": "c7be60fc: threat (d): a moved repo's redirect is followed",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "readMain reads main over git's protocol, with a User-Agent, no credential and no redirects; the API is not asked"
+      },
+      "expect": "redirects must not be followed"
+    },
+    {
+      "id": "c7-4-exact-main",
+      "row": "(a)",
+      "file": "src/fresh.ts",
+      "find": "if (m[2] !== \"refs/heads/main\") return;",
+      "replace": "if (!m[2].startsWith(\"refs/heads/main\")) return;",
+      "why": "c7be60fc: threat (a): main-old / main^{} taken for main",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "only refs/heads/main-old"
+    },
+    {
+      "id": "c7-5-anchored-record",
+      "row": "(a)",
+      "file": "src/fresh.ts",
+      "find": "/^([0-9a-f]{40}) ([^ \\0\\n]+)$/",
+      "replace": "/([0-9a-f]{40}) ([^ \\0\\n]+)/",
+      "why": "c7be60fc: threat (a): a sha found elsewhere in a packet",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "a page with a sha elsewhere in a packet"
+    },
+    {
+      "id": "c7-6-two-main",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "    if (main) throw new Error(\"two main records\");\n",
+      "replace": "",
+      "why": "c7be60fc: two main records: the last one wins",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "two main records"
+    },
+    {
+      "id": "c7-7-caps-first-only",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "      if (i !== 0) throw new Error(\"capabilities after the first ref\");\n",
+      "replace": "",
+      "why": "c7be60fc: capabilities accepted on a later ref",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "capabilities on a later ref"
+    },
+    {
+      "id": "c7-8-service-line",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "  if (p[0] !== \"# service=git-upload-pack\\n\" && p[0] !== \"# service=git-upload-pack\") throw new Error(\"no service line\");\n",
+      "replace": "",
+      "why": "c7be60fc: no check of the service line",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "a wrong service line"
+    },
+    {
+      "id": "c7-9-service-flush",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "  if (p[1] !== null) throw new Error(\"no flush after the service line\");\n",
+      "replace": "",
+      "why": "c7be60fc: no flush required after the service line",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "no flush after the service line"
+    },
+    {
+      "id": "c7-10-final-flush",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "if (p.length < 4 || p.at(-1) !== null) throw",
+      "replace": "if (p.length < 4) throw",
+      "why": "c7be60fc: no final flush required: a cut reply is read",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "no final flush"
+    },
+    {
+      "id": "c7-11-packet-max",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "len < 4 || len > 65520 || ",
+      "replace": "len < 4 || ",
+      "why": "c7be60fc: packets longer than git allows are read",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "a packet longer than git allows"
+    },
+    {
+      "id": "c7-12-body-cap",
+      "row": "G1",
+      "file": "src/fresh.ts",
+      "find": "mainFromAdvert(await capped(res, MAX_BODY))",
+      "replace": "mainFromAdvert(new Uint8Array(await res.arrayBuffer()))",
+      "why": "c7be60fc: the 256 KB body cap is removed",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "a reply over 256 KB"
+    },
+    {
+      "id": "c7-13-api-only-on-git-failure",
+      "row": "(c)",
+      "file": "src/fresh.ts",
+      "find": "  const git = await readGit(fetchFn, deadline);\n  if (\"sha\" in git) return git;\n  const api = await readApi(fetchFn, deadline);",
+      "replace": "  const api = await readApi(fetchFn, deadline);\n  const git = \"sha\" in api ? api : await readGit(fetchFn, deadline);\n  if (\"sha\" in git) return git;",
+      "why": "c7be60fc: threat (c): the API is read first and its healthier answer wins",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "the sources disagree: a valid git answer is used and the API is read only when git failed"
+      },
+      "expect": "the API is read only when git failed"
+    },
+    {
+      "id": "c7-14-git-deadline",
+      "row": "G3",
+      "file": "src/fresh.ts",
+      "find": "redirect: \"manual\", signal: AbortSignal.timeout(deadline) });",
+      "replace": "redirect: \"manual\" });",
+      "why": "c7be60fc: G3: the git read has no deadline",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "G3: git stalls and the API answers, inside the deadline"
+      },
+      "expect": "git read has no deadline"
+    },
+    {
+      "id": "c7-15-api-deadline",
+      "row": "G3",
+      "file": "src/fresh.ts",
+      "find": "    signal: AbortSignal.timeout(deadline),\n  });\n",
+      "replace": "  });\n",
+      "why": "c7be60fc: G3: the API read has no deadline",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "G3: both stall: an error naming both within two deadlines, so the verdict is still written"
+      },
+      "expect": "a read has no deadline"
+    },
+    {
+      "id": "c7-16-capability-list",
+      "row": "build r1#1",
+      "file": "src/fresh.ts",
+      "find": "      if (!CAPS.test(rec.slice(nul + 1))) throw new Error(\"bad capability list\");\n",
+      "replace": "",
+      "why": "c7be60fc: Codex build r1 #1: anything behind the NUL is discarded unchecked",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "markup hidden behind the capability NUL"
+    },
+    {
+      "id": "c7-17-first-ref-capabilities",
+      "row": "build r1#2",
+      "file": "src/fresh.ts",
+      "find": "    if (i === 0 && nul < 0) throw new Error(\"no capabilities on the first ref\");\n",
+      "replace": "",
+      "why": "c7be60fc: Codex build r1 #2: a first ref without the required capability list is accepted",
+      "test": {
+        "file": "test/fresh.test.ts",
+        "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
+      },
+      "expect": "no capabilities on the first ref"
     }
   ],
   "retired": []
