@@ -5,7 +5,7 @@
 // raises findings, and keeps run and op state in its own maps, apart from the grant map records.ts
 // prunes (threat 11), so an op id equal to a grant id never collides (threat 10).
 import { GRANT_TTL_MS, MAX_STORED_BYTES, SKEW_MS, sha256, STORE_BUDGET_BYTES, type WriterRecord } from "./contract.ts";
-import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_RESULT_MS, cardApproval, challengeHash, isCardId } from "./card.ts";
+import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_RESULT_MS, cardApproval, challengeHash, isCardId, repoIdRefusal } from "./card.ts";
 import { grantHashOf } from "./recorder/passkey.ts";
 import { OP_DAY_CAP, parseDescriptor, RESULT_MS, RUN_CUTOFF_BYTES, RUN_MAX_MS, RUN_OPEN_JOB, uncovered, type Op, type OpResult, type RunSeen } from "./ops.ts";
 import type { Finding } from "./records.ts";
@@ -237,6 +237,8 @@ export async function onCardResult(s: CardsState, grant: string, seq: number, re
   if (!e) return [];
   const out: Finding[] = [], shown = `card grant ${await fp(grant)} (record ${seq})`;
   if (!(typeof record.outcome === "string" && CARD_OUTCOMES.includes(record.outcome))) out.push(await cardBad(grant, seq, "a result whose outcome is not done, failed or unknown"));
+  const noRepo = repoIdRefusal(record);
+  if (noRepo) out.push(await cardBad(grant, seq, noRepo));
   if (e.deadline !== undefined && (e.end === "incomplete" || at > e.deadline + CARD_RESULT_MS)) out.push({ id: `card-late:${grant}:${seq}`, text: `${shown}: its result came over an hour after the card's deadline` });
   if (record.outcome === "unknown") out.push({ id: `card-unknown:${grant}`, text: `${shown}: the result is unknown -- the job may have run; do not tap it again` });
   e.end = "result";

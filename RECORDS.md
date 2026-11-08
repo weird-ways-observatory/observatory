@@ -160,7 +160,8 @@ Rules live in `src/card.ts`, used by the recorder and the checker alike.
 
 - **Card request:** an ordinary request that also carries `card`, the card's id (8-64 of
   `A-Z a-z 0-9 _ -`; not the Brain task id named `card` inside run ops). Its job must be on
-  `CARD_ELIGIBLE` (today `test.echo`, `cf.zone.read`, `cf.dns.list`, `cf.audit.read`; changed only by a
+  `CARD_ELIGIBLE` (today `test.echo`, `cf.zone.read`, `cf.dns.list`, `cf.audit.read`, and since card
+  77ec1e64 `gh.repo.create`, the vault making an empty private repo; changed only by a
   Ben-merged PR; empty refuses every card). It takes 4 tap slots as usual **and** 4 of a 100-slot card
   share a UTC day (at most 25 card entries a day; 300 tap slots always stay for single taps), and is
   refused at 5 GiB stored + reserved counting its own reservation (single taps keep the full 6 GiB).
@@ -180,11 +181,16 @@ Rules live in `src/card.ts`, used by the recorder and the checker alike.
   vault refuses to start an entry past it.
 - **Card result:** `outcome` must be `done`, `failed` (known not done) or `unknown` (started, no answer:
   it may have run; never retried).
+- **Repo id (card 77ec1e64):** a `done` result of `gh.repo.create` must carry `repo_id`, GitHub's
+  repository id as a string of digits (no leading zero, at most 20); no other result may carry
+  `repo_id` (409; `card_refused` on a card grant). It is the durable evidence the nightly check and the
+  "repos made by cards" measure match a new repo by. Rule: `repoIdRefusal()` in `src/card.ts`.
 - **Hourly checker:** re-runs these checks on stored card approvals, timed by their signed
   `recorded_at`, and checks the challenge carries the card hash (`card-bad`); a card approval with no
   result recorded by deadline + 1 hour, raised only once a complete read has passed that time
   (`card-incomplete`); a result after that time (`card-late`); an `unknown` result, alerted once and then
-  listed like any locked-record incident (`card-unknown`). A card approval whose request the checker does
+  listed like any locked-record incident (`card-unknown`). A done `gh.repo.create` result without a valid
+  `repo_id`, or a `repo_id` on any other result, is `card-bad`. A card approval whose request the checker does
   not hold (for example after a checker revert) is `card-bad` (no request context). A card grant still
   unresolved 30 days after the checker first held it (reads stalled) is `card-unsettled` before its state
   is let go; until then its order context is kept too, so its card checks still run when reading recovers.

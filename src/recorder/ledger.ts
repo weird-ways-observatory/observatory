@@ -10,7 +10,7 @@
 import { b64, DAY_CAP, GRANT_TTL_MS, keyFor, MAX_STORED_BYTES, receiptSealed, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt, type Stage, type WriterRecord } from "../contract.ts";
 import { approvalCheck, grantHashOf, PASSKEY_PIN, type ApprovalCheck } from "./passkey.ts";
 import { OP_DAY_CAP, RESULT_MS, RUN_CUTOFF_BYTES } from "../ops.ts";
-import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_SHARE, cardApproval, isCardId } from "../card.ts";
+import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_SHARE, cardApproval, isCardId, repoIdRefusal } from "../card.ts";
 
 /**
  * The slice of Durable Object storage used here; each put of several keys is one atomic write.
@@ -283,6 +283,8 @@ export class Ledger {
         if (refused) return refused;
       }
       if (r.stage === "result" && grant.card !== undefined && !(typeof r.outcome === "string" && CARD_OUTCOMES.includes(r.outcome))) return { status: 409, why: "a card entry's result must be done, failed or unknown", word: "card_refused" };
+      const noRepo = r.stage === "result" ? repoIdRefusal(r) : undefined;
+      if (noRepo) return { status: 409, why: noRepo, ...(grant.card !== undefined ? { word: "card_refused" as const } : {}) };
       // Its slot was reserved when the request was taken (and carried into today if need be).
       meta = { ...meta, open: meta.open.map((o) => (o.grant === r.grant ? { ...o, left: Math.max(0, o.left - 1) } : o)) };
       next = grant;
