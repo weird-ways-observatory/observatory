@@ -17,8 +17,8 @@
       "id": "r1-2-tap-reservation-by-upload-time",
       "row": "r1#2",
       "file": "src/records.ts",
-      "find": "r.env!.sha256, Date.parse(r.env!.recorded_at), next, shown);",
-      "replace": "r.env!.sha256, o.uploaded.getTime(), next, shown);",
+      "find": "              const at = Date.parse(r.env!.recorded_at);",
+      "replace": "              const at = o.uploaded.getTime();",
       "why": "A (card 1a272a5c): r1#2 tap reservation by upload time",
       "test": {
         "file": "test/ops.test.ts",
@@ -888,8 +888,8 @@
       "id": "b1-ae1-unverified-two-writes",
       "row": "AE1",
       "file": "src/recorder/ledger.ts",
-      "find": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await this.storage.transaction(async (txn) => {",
-      "replace": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await ((fn: (t: Txn) => Promise<void>) => fn(this.storage))(async (txn) => {",
+      "find": "    if (checked.ok && !(await this.#approvalRefusal(checked.record, g0, now))) return false;\n    await this.storage.transaction(async (txn) => {",
+      "replace": "    if (checked.ok && !(await this.#approvalRefusal(checked.record, g0, now))) return false;\n    await ((fn: (t: Txn) => Promise<void>) => fn(this.storage))(async (txn) => {",
       "why": "B1 (card 509a5d85): the live #withdrawUnverified fix undone: its writes run straight on storage, not in one transaction",
       "test": {
         "file": "test/passkey.test.ts",
@@ -979,8 +979,8 @@
       "id": "b1-z5-legacy-bytes-uncharged",
       "row": "Z5",
       "file": "src/recorder/ledger.ts",
-      "find": "meta: { ...m, bytes: m.bytes + len(stored) - len(p.stored) }, pending: (p = ",
-      "replace": "meta: m, pending: (p = ",
+      "find": "meta: stamp({ ...m, bytes: m.bytes + len(stored) - len(p.stored) }, p.key), pending: (p = ",
+      "replace": "meta: stamp(m, p.key), pending: (p = ",
       "why": "B1 (card 509a5d85): signing a legacy envelope (not re-timed) is not charged its length change",
       "test": {
         "file": "test/accounting.test.ts",
@@ -1070,8 +1070,8 @@
       "id": "b1-ae1-unverified-plant-two-writes",
       "row": "AE1",
       "file": "src/recorder/ledger.ts",
-      "find": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await this.storage.transaction(async (txn) => {",
-      "replace": "    if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;\n    await ((fn: (t: Txn) => Promise<void>) => fn(this.storage))(async (txn) => {",
+      "find": "    if (checked.ok && !(await this.#approvalRefusal(checked.record, g0, now))) return false;\n    await this.storage.transaction(async (txn) => {",
+      "replace": "    if (checked.ok && !(await this.#approvalRefusal(checked.record, g0, now))) return false;\n    await ((fn: (t: Txn) => Promise<void>) => fn(this.storage))(async (txn) => {",
       "why": "B1 (card 509a5d85): with a planted name and a fault, the unverified withdrawal's writes land apart (Codex B1 r1 #3)",
       "test": {
         "file": "test/accounting.test.ts",
