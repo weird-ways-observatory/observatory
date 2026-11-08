@@ -185,7 +185,9 @@ Rules live in `src/card.ts`, used by the recorder and the checker alike.
   result recorded by deadline + 1 hour, raised only once a complete read has passed that time
   (`card-incomplete`); a result after that time (`card-late`); an `unknown` result, alerted once and then
   listed like any locked-record incident (`card-unknown`). A card approval whose request the checker does
-  not hold (for example after a checker revert) is `card-bad` (no request context).
+  not hold (for example after a checker revert) is `card-bad` (no request context). A card grant still
+  unresolved 30 days after the checker first held it (reads stalled) is `card-unsettled` before its state
+  is let go; until then its order context is kept too, so its card checks still run when reading recovers.
 - **No revert after the first card request.** A reverted recorder refuses card approvals; when this
   version returns, it sees that other code wrote (`meta.card` keeps the record number and pending write
   it last left) and treats the card share as full for the rest of that UTC day. A reverted checker drops

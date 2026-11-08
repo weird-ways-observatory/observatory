@@ -203,7 +203,7 @@ export const measures = (s: OpsState, use: { tap: number; op: number; reserved_b
 // A card approval re-runs the recorder's checks (card.ts cardApproval) timed by its signed recorded_at, and
 // its challenge must carry the card hash; the passkey signature is not re-verified (the recorder did, as for
 // ordinary approvals). Records without a card mark or `approval_kind` are untouched.
-interface CardEntry { job: string; req: string; card: string; at: number; seq: number; exp?: number; by?: string; hash?: string; deadline?: number; end?: "result" | "incomplete"; read?: number }
+interface CardEntry { job: string; req: string; card: string; at: number; seq: number; exp?: number; by?: string; hash?: string; deadline?: number; end?: "result" | "incomplete" | "lapsed"; read?: number }
 export type CardsState = Record<string, CardEntry>;
 /** True while a card grant may still need its request context: not yet resolved by a result or an incident. */
 export const cardOpen = (s: CardsState, g: string) => Object.hasOwn(s, g) && !s[g].end;
@@ -252,19 +252,20 @@ export async function settleCards(s: CardsState, now: number, through: number | 
   const out: Finding[] = [];
   for (const [g, e] of Object.entries(s)) {
     e.read ??= now;
-    // Due: the card's deadline, or the grant's 24 h if sooner (no result can be stored after it), + 1 h.
-    const due = e.deadline === undefined ? undefined : Math.min(e.deadline, e.at + GRANT_TTL_MS) + CARD_RESULT_MS;
-    if (through !== undefined && due !== undefined && !e.end && due < through) {
-      out.push({ id: `card-incomplete:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) has no result an hour after its card's deadline: it may not have run, or ran unrecorded` });
+    const due = e.deadline === undefined ? undefined : e.deadline + CARD_RESULT_MS; // the card's rule: deadline + 1 h
+    if (through !== undefined && !e.end) {
+      if (due !== undefined && due < through) {
+        out.push({ id: `card-incomplete:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) has no result an hour after its card's deadline: it may not have run, or ran unrecorded` });
+        e.end = "incomplete";
+      } else if (due === undefined && e.at + GRANT_TTL_MS + CARD_RESULT_MS < through) e.end = "lapsed"; // never approved; no stage can be stored after 24 h
+    }
+    // No entry is let go unresolved in silence (Codex build r1 #2, r2 #3): still unresolved 30 days after this
+    // checker first held it (approved or not), it becomes its own standing incident, and only then goes.
+    if (!e.end && e.read < now - 30 * DAY_MS) {
+      out.push({ id: `card-unsettled:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) could not be settled within 30 days of being read: its card checks may never run` });
       e.end = "incomplete";
     }
-    // An approved entry is never let go unsettled in silence (Codex build r1 #2): after 30 days with no
-    // complete read past its due time it becomes its own standing incident, then goes.
-    if (due !== undefined && !e.end && e.read < now - 30 * DAY_MS) {
-      out.push({ id: `card-unsettled:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) could not be settled: no complete read of the records for 30 days after its approval was read` });
-      e.end = "incomplete";
-    }
-    if ((e.end || due === undefined) && ((through ?? 0) > e.at + 3 * DAY_MS || e.read < now - 30 * DAY_MS)) delete s[g];
+    if (e.end && ((through ?? 0) > e.at + 3 * DAY_MS || e.read < now - 30 * DAY_MS)) delete s[g];
   }
   return out;
 }

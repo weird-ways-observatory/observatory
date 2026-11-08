@@ -183,3 +183,24 @@ test("Codex build r1 #3: after a read stalled over 48 h, the card approval and i
   assert.ok(!ids.some((i) => i.startsWith("approval-first:") || i.startsWith("unrecorded:")), `the grant context was let go: ${ids}`);
   assert.ok(ids.includes("card-unknown:grant-st-01"), `the unknown result skipped the card checks: ${ids}`);
 });
+
+test("Codex build r2 #3: a card request whose approval is not yet read when reads stall 31 days becomes card-unsettled before its state goes", async () => {
+  const w = await world();
+  await w.request("grant-un-01");
+  await w.run(T0 + 30_000); // the request is held; its approval is not read yet
+  w.b.store.set(keyFor(2, "grant-zz-04", "request"), { body: "{}", uploaded: new Date(T0 + MIN) }); // stall at number 2
+  await w.run(T0 + 29 * 24 * HOUR);
+  assert.deepEqual(w.cardIds(), []);
+  await w.run(T0 + 31 * 24 * HOUR);
+  assert.ok(w.cardIds().includes("card-unsettled:grant-un-01"), `an unread approval's card checks were lost in silence: ${w.cardIds()}`);
+});
+
+test("Codex build r2 gap: the missing-result rule is the card's deadline + 1 h, even when that is past the grant's 24 h", async () => {
+  const w = await world(), exp = T0 + 48 * HOUR, deadline = exp + CARD_RUN_MS;
+  const A = await w.request("grant-fd-01", T0, { expires_at: exp });
+  await w.approve("grant-fd-01", A.sha, w.manifest([A.hash], { deadline }));
+  await w.run(T0 + 26 * HOUR);
+  assert.deepEqual(w.cardIds(), [], "raised before the card's deadline + 1 h");
+  await w.run(deadline + CARD_RESULT_MS + 20 * MIN);
+  assert.deepEqual(w.cardIds(), ["card-incomplete:grant-fd-01"]);
+});

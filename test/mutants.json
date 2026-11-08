@@ -1538,8 +1538,8 @@
       "id": "c-incomplete-watermark",
       "row": "T12",
       "file": "src/runcheck.ts",
-      "find": "!e.end && due < through) {",
-      "replace": "!e.end && due < now) {",
+      "find": "if (due !== undefined && due < through) {",
+      "replace": "if (due !== undefined && due < now) {",
       "why": "card 586da182: threat 12: missing result only past a complete read",
       "test": {
         "file": "test/cards-checker.test.ts",
@@ -1603,7 +1603,7 @@
       "id": "c-r1-2-unsettled",
       "row": "r1#2",
       "file": "src/runcheck.ts",
-      "find": "    if (due !== undefined && !e.end && e.read < now - 30 * DAY_MS) {",
+      "find": "    if (!e.end && e.read < now - 30 * DAY_MS) {",
       "replace": "    if (false) {",
       "why": "card 586da182: Codex build r1 #2 no silent drop of an unresolved card approval",
       "test": {
@@ -1624,6 +1624,32 @@
         "name": "Codex build r1 #3: after a read stalled over 48 h, the card approval and its unknown result still get the card checks"
       },
       "expect": "the grant context was let go"
+    },
+    {
+      "id": "c-r2-3-unread-unsettled",
+      "row": "r2#3",
+      "file": "src/runcheck.ts",
+      "find": "    if (!e.end && e.read < now - 30 * DAY_MS) {",
+      "replace": "    if (e.deadline !== undefined && !e.end && e.read < now - 30 * DAY_MS) {",
+      "why": "card 586da182: Codex build r2 #3 an unread approval is not let go in silence",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "Codex build r2 #3: a card request whose approval is not yet read when reads stall 31 days becomes card-unsettled before its state goes"
+      },
+      "expect": "an unread approval's card checks were lost in silence"
+    },
+    {
+      "id": "c-r2-gap-card-deadline-rule",
+      "row": "r2gap",
+      "file": "src/runcheck.ts",
+      "find": "e.deadline === undefined ? undefined : e.deadline + CARD_RESULT_MS;",
+      "replace": "e.deadline === undefined ? undefined : Math.min(e.deadline, e.at + GRANT_TTL_MS) + CARD_RESULT_MS;",
+      "why": "card 586da182: Codex build r2 gap: missing-result rule is deadline + 1 h",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "Codex build r2 gap: the missing-result rule is the card's deadline + 1 h, even when that is past the grant's 24 h"
+      },
+      "expect": "raised before the card's deadline + 1 h"
     }
   ],
   "retired": []
