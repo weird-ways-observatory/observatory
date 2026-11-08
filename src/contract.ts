@@ -45,10 +45,16 @@ export interface WriterRecord { v: 1; grant: string; stage: Stage; job: string; 
 // `tag`: set only for a record stored under a random-tagged name (card 6f681cc1), and signed with the
 // rest, so a signed envelope copied to another tagged name at its number does not verify there.
 export interface Envelope { v: 1 | 2; seq: number; grant: string; stage: Stage; recorded_at: string; sha256: string; body: string; tag?: string; sig?: string }
-export interface Receipt { v: 1; seq: number; key: string; grant: string; stage: Stage; sha256: string; recorded_at: string }
+// `sig` (card 586da182): the recorder's Ed25519 signature over receiptSealed, added when it answers; never stored.
+export interface Receipt { v: 1; seq: number; key: string; grant: string; stage: Stage; sha256: string; recorded_at: string; sig?: string }
 
 /** The bytes the recorder signs: every envelope field but `sig`, in this fixed order. An untagged envelope has no `tag`, which JSON leaves out, so its bytes are as before tags. */
 export const sealed = (e: Envelope) => new TextEncoder().encode(JSON.stringify({ v: e.v, seq: e.seq, grant: e.grant, stage: e.stage, recorded_at: e.recorded_at, sha256: e.sha256, body: e.body, tag: e.tag }));
+/**
+ * The bytes a receipt's `sig` covers: a fixed `receipt/v1` label first, then every receipt field but `sig` in
+ * this order. An envelope's bytes start with `v`, so neither signature can pass as the other.
+ */
+export const receiptSealed = (r: Receipt) => new TextEncoder().encode(JSON.stringify({ kind: "receipt/v1", v: r.v, seq: r.seq, key: r.key, grant: r.grant, stage: r.stage, sha256: r.sha256, recorded_at: r.recorded_at }));
 /** Bytes as base64, and back: how keys and signatures travel as text. */
 export const b64 = (bytes: ArrayBuffer | Uint8Array) => btoa(String.fromCharCode(...new Uint8Array(bytes)));
 export const unb64 = (text: string) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));

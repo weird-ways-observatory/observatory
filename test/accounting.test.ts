@@ -81,6 +81,7 @@ test("status shows both pools (op pool empty), 6 GiB budget, 5 GiB op cutoff, pe
   assert.deepEqual(s.pools, {
     tap: { used: STAGE_SLOTS, cap: DAY_CAP, reserved_slots: STAGE_SLOTS - 1, reserved_bytes: (STAGE_SLOTS - 1) * MAX_STORED_BYTES },
     op: { used: 0, cap: OP_DAY_CAP, reserved_slots: 0, reserved_bytes: 0 },
+    card: { used: 0, cap: 100, reserved_slots: 0, blocked: false }, // card 586da182: inside the tap pool
   });
   assert.equal(s.used_today, STAGE_SLOTS); // the old name stays the tap pool, for the desk's reader
   assert.deepEqual([s.budget_bytes, s.op_cutoff_bytes, s.stored_bytes, s.pending_bytes], [6 * 1024 ** 3, 5 * 1024 ** 3, storedBytes(b), 0]);
