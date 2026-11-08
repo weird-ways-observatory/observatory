@@ -4,7 +4,7 @@
 // rules and the op format live in ops.ts, shared with B's recorder. Nothing here refuses anything: it
 // raises findings, and keeps run and op state in its own maps, apart from the grant map records.ts
 // prunes (threat 11), so an op id equal to a grant id never collides (threat 10).
-import { MAX_STORED_BYTES, SKEW_MS, sha256, STORE_BUDGET_BYTES, type WriterRecord } from "./contract.ts";
+import { GRANT_TTL_MS, MAX_STORED_BYTES, SKEW_MS, sha256, STORE_BUDGET_BYTES, type WriterRecord } from "./contract.ts";
 import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_RESULT_MS, cardApproval, challengeHash, isCardId } from "./card.ts";
 import { grantHashOf } from "./recorder/passkey.ts";
 import { OP_DAY_CAP, parseDescriptor, RESULT_MS, RUN_CUTOFF_BYTES, RUN_MAX_MS, RUN_OPEN_JOB, uncovered, type Op, type OpResult, type RunSeen } from "./ops.ts";
@@ -205,6 +205,8 @@ export const measures = (s: OpsState, use: { tap: number; op: number; reserved_b
 // ordinary approvals). Records without a card mark or `approval_kind` are untouched.
 interface CardEntry { job: string; req: string; card: string; at: number; seq: number; exp?: number; by?: string; hash?: string; deadline?: number; end?: "result" | "incomplete"; read?: number }
 export type CardsState = Record<string, CardEntry>;
+/** True while a card grant may still need its request context: not yet resolved by a result or an incident. */
+export const cardOpen = (s: CardsState, g: string) => Object.hasOwn(s, g) && !s[g].end;
 /** The saved card state, or empty where it is missing or from before this card (a reverted checker drops it). */
 export const loadCards = (x: unknown): CardsState => bare<CardEntry>(Object.fromEntries(Object.entries(x && typeof x === "object" ? x : {}).filter(([, v]) => v && typeof v === "object")));
 /** A card-bad finding: one per record, the grant shown as a fingerprint, the reason a fixed phrase. */
@@ -250,11 +252,19 @@ export async function settleCards(s: CardsState, now: number, through: number | 
   const out: Finding[] = [];
   for (const [g, e] of Object.entries(s)) {
     e.read ??= now;
-    if (through !== undefined && e.deadline !== undefined && !e.end && e.deadline + CARD_RESULT_MS < through) {
+    // Due: the card's deadline, or the grant's 24 h if sooner (no result can be stored after it), + 1 h.
+    const due = e.deadline === undefined ? undefined : Math.min(e.deadline, e.at + GRANT_TTL_MS) + CARD_RESULT_MS;
+    if (through !== undefined && due !== undefined && !e.end && due < through) {
       out.push({ id: `card-incomplete:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) has no result an hour after its card's deadline: it may not have run, or ran unrecorded` });
       e.end = "incomplete";
     }
-    if ((through ?? 0) > e.at + 3 * DAY_MS || e.read < now - 30 * DAY_MS) delete s[g];
+    // An approved entry is never let go unsettled in silence (Codex build r1 #2): after 30 days with no
+    // complete read past its due time it becomes its own standing incident, then goes.
+    if (due !== undefined && !e.end && e.read < now - 30 * DAY_MS) {
+      out.push({ id: `card-unsettled:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) could not be settled: no complete read of the records for 30 days after its approval was read` });
+      e.end = "incomplete";
+    }
+    if ((e.end || due === undefined) && ((through ?? 0) > e.at + 3 * DAY_MS || e.read < now - 30 * DAY_MS)) delete s[g];
   }
   return out;
 }

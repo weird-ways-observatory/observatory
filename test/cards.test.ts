@@ -313,3 +313,13 @@ test("S1: a blocked share never holds back a card grant's later stages (only the
   assert.equal((await s.l.accept(result("grant-bk-01", A.request), at(Date.parse("2026-11-09T00:03:00.000Z")))).status, 201, "a blocked share held back a later stage");
   assert.ok(DAY_CAP > CARD_SHARE);
 });
+
+test("Codex build r1 #1: a change-over seen only by refused card requests and status reads blocks that UTC day alone", async () => {
+  const s = await setup(), old = new OldLedger(s.st, s.b, undefined, approvalCheck(s.pin));
+  await requested(s.l, "grant-r1-01", { t: T0 });
+  await requested(old, "grant-r1-02", { t: T0 + MIN, card: null });
+  await requested(s.l, "grant-r1-03", { t: T0 + 2 * MIN, status: 429 }); // the only write attempt today: refused
+  assert.equal((await cardStatus(s.l, T0 + 3 * MIN)).blocked, true);
+  assert.equal((await cardStatus(s.l, Date.parse("2026-11-09T00:30:00.000Z"))).blocked, false, "status shows tomorrow blocked");
+  await requested(s.l, "grant-r1-04", { t: Date.parse("2026-11-09T01:00:00.000Z") }); // no ordinary record in between
+});

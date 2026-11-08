@@ -157,3 +157,29 @@ test("today's records (no card mark, no approval_kind) give no card finding", as
   await w.run(AFTER + HOUR);
   assert.deepEqual(w.cardIds(), []);
 });
+
+test("Codex build r1 #2: an approved card entry whose read stalls 30 days becomes card-unsettled, never dropped in silence", async () => {
+  const w = await world();
+  const A = await w.request("grant-us-01");
+  await w.approve("grant-us-01", A.sha, w.manifest([A.hash]));
+  await w.run(T0 + 2 * MIN); // the approval is held
+  w.b.store.set(keyFor(3, "grant-zz-02", "request"), { body: "{}", uploaded: new Date(T0 + 3 * MIN) }); // unsigned: the bookmark waits
+  await w.run(T0 + 10 * 24 * HOUR);
+  assert.deepEqual(w.cardIds(), []);
+  await w.run(T0 + 31 * 24 * HOUR);
+  assert.ok(w.cardIds().includes("card-unsettled:grant-us-01"), `unresolved card approval dropped in silence: ${w.cardIds()}`);
+});
+
+test("Codex build r1 #3: after a read stalled over 48 h, the card approval and its unknown result still get the card checks", async () => {
+  const w = await world();
+  const A = await w.request("grant-st-01");
+  await w.run(T0 + 30_000); // the request is read
+  w.b.store.set(keyFor(2, "grant-zz-03", "request"), { body: "{}", uploaded: new Date(T0 + MIN) }); // stall at number 2
+  await w.run(T0 + 50 * HOUR);
+  await w.approve("grant-st-01", A.sha, w.manifest([A.hash])); // number 2, signed, beside the plant
+  await w.result("grant-st-01", A.sha, "unknown", T0 + 2 * MIN);
+  await w.run(T0 + 51 * HOUR);
+  const ids = w.ids();
+  assert.ok(!ids.some((i) => i.startsWith("approval-first:") || i.startsWith("unrecorded:")), `the grant context was let go: ${ids}`);
+  assert.ok(ids.includes("card-unknown:grant-st-01"), `the unknown result skipped the card checks: ${ids}`);
+});

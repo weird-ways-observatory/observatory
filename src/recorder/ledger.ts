@@ -254,7 +254,11 @@ export class Ledger {
       return done.sha256 === sha ? { status: 200, receipt: await this.#signed(done) } : { status: 409, why: "this stage of this grant is already recorded with other content" };
     }
     // Nothing is pending here (#finishPending stored it): the card counter must name no pending key.
-    let meta = cardCheck(settle((await this.storage.get<Meta>("meta")) ?? { seq: 0, day: day(t), used: 0, bytes: 0, open: [] }, t), undefined, t);
+    const raw = await this.storage.get<Meta>("meta");
+    let meta = cardCheck(settle(raw ?? { seq: 0, day: day(t), used: 0, bytes: 0, open: [] }, t), undefined, t);
+    // A change-over seen here is saved now, with fresh markers, even if this record is then refused: else the
+    // same mismatch would block the next UTC day too (Codex build r1 #1). The block lasts the day it was seen.
+    if (raw?.card && (raw.card.seq !== raw.seq || raw.card.pending !== undefined)) await this.storage.put({ meta: (meta = stamp(meta, undefined)) });
 
     let next: Grant;
     if (r.stage === "request") {

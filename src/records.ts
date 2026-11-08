@@ -14,7 +14,7 @@
 import { alert, redact, type AlertEnv } from "./alert.ts";
 import { DAY_CAP, GRANT_TTL_MS, MAX_STORED_BYTES, ROOT, sealed, sha256, SKEW_MS, unb64, validate, type Envelope, type Stage } from "./contract.ts";
 import { isOpStage, nameOf, OPS_FROM, poolUse, validateOp, type AnyStage, type Op, type OpResult } from "./ops.ts";
-import { badOp, capacityFindings, countBytes, fp, loadCards, loadOps, measures, onApproval, onCardApproval, onCardRequest, onCardResult, onOp, onRequest, onResult, poolFindings, pruneDays, settle, settleCards, type CardsState, type OpsState } from "./runcheck.ts";
+import { badOp, capacityFindings, cardOpen, countBytes, fp, loadCards, loadOps, measures, onApproval, onCardApproval, onCardRequest, onCardResult, onOp, onRequest, onResult, poolFindings, pruneDays, settle, settleCards, type CardsState, type OpsState } from "./runcheck.ts";
 import { readLockLength, type LockEnv } from "./lock.ts";
 
 export interface RecordsEnv extends AlertEnv, LockEnv {
@@ -66,7 +66,7 @@ const pad = (n: number) => String(n).padStart(12, "0");
 // How a grant id appears in alerts (runcheck.ts fp): a fingerprint, never the id. Grant findings also name the record number.
 export { fp };
 // Worst first: what ran unrecorded or unchecked before what is merely malformed.
-const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "card-bad", "card-incomplete", "card-unknown", "card-late", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "op-unsettled", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
+const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "card-bad", "card-incomplete", "card-unsettled", "card-unknown", "card-late", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "op-unsettled", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
 const LOW = RANK.indexOf("junk"); // junk and stray: cheap for a writer to make by the thousand
 const kind = (id: string) => id.split(":")[0];
 const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 ? RANK.length : i; };
@@ -450,8 +450,10 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   // re-check that stopped short (it would mark unchecked numbers as signed).
   if (key && sealDone) sealedTo = Math.max(sealedTo, seq);
   // Forget grants past their life, keeping at most MAX_OPEN, and day counts older than three days.
-  for (const [g, o] of Object.entries(open)) if (now.getTime() - o.at > GRANT_TTL_MS + 86_400_000) delete open[g];
-  for (const g of Object.keys(open).sort((a, b) => open[a].at - open[b].at).slice(0, Math.max(0, Object.keys(open).length - MAX_OPEN))) delete open[g];
+  // A card grant still unresolved keeps its context, so a stalled read cannot skip its card checks (Codex build r1 #3);
+  // the card state bounds how long (runcheck.ts settleCards).
+  for (const [g, o] of Object.entries(open)) if (now.getTime() - o.at > GRANT_TTL_MS + 86_400_000 && !cardOpen(cards, g)) delete open[g];
+  for (const g of Object.keys(open).filter((x) => !cardOpen(cards, x)).sort((a, b) => open[a].at - open[b].at).slice(0, Math.max(0, Object.keys(open).length - MAX_OPEN))) delete open[g];
   for (const d of Object.keys(days)) if (d < day(new Date(now.getTime() - 3 * 86_400_000))) delete days[d];
 
   const lock = await readLockLength(env, fetchFn, now, RECORDS_BUCKET, LOCKED, MIN_LOCK_SECONDS);

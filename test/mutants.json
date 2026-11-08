@@ -1538,8 +1538,8 @@
       "id": "c-incomplete-watermark",
       "row": "T12",
       "file": "src/runcheck.ts",
-      "find": "e.deadline + CARD_RESULT_MS < through) {",
-      "replace": "e.deadline + CARD_RESULT_MS < now) {",
+      "find": "!e.end && due < through) {",
+      "replace": "!e.end && due < now) {",
       "why": "card 586da182: threat 12: missing result only past a complete read",
       "test": {
         "file": "test/cards-checker.test.ts",
@@ -1585,6 +1585,45 @@
         "name": "S2: new -> old -> new checker with an old-checker save between a card request and its approval: card-bad (no request context), nothing else lost"
       },
       "expect": "card-bad:grant-s2-01:2"
+    },
+    {
+      "id": "c-r1-1-persist-detection",
+      "row": "r1#1",
+      "file": "src/recorder/ledger.ts",
+      "find": "raw.card.pending !== undefined)) await this.storage.put({ meta: (meta = stamp(meta, undefined)) });",
+      "replace": "raw.card.pending !== undefined)) void 0;",
+      "why": "card 586da182: Codex build r1 #1 change-over detection saved even when refused",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "Codex build r1 #1: a change-over seen only by refused card requests and status reads blocks that UTC day alone"
+      },
+      "expect": "status shows tomorrow blocked"
+    },
+    {
+      "id": "c-r1-2-unsettled",
+      "row": "r1#2",
+      "file": "src/runcheck.ts",
+      "find": "    if (due !== undefined && !e.end && e.read < now - 30 * DAY_MS) {",
+      "replace": "    if (false) {",
+      "why": "card 586da182: Codex build r1 #2 no silent drop of an unresolved card approval",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "Codex build r1 #2: an approved card entry whose read stalls 30 days becomes card-unsettled, never dropped in silence"
+      },
+      "expect": "unresolved card approval dropped in silence"
+    },
+    {
+      "id": "c-r1-3-keep-context",
+      "row": "r1#3",
+      "file": "src/records.ts",
+      "find": "GRANT_TTL_MS + 86_400_000 && !cardOpen(cards, g)) delete open[g];",
+      "replace": "GRANT_TTL_MS + 86_400_000) delete open[g];",
+      "why": "card 586da182: Codex build r1 #3 unresolved card grants keep their order context",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "Codex build r1 #3: after a read stalled over 48 h, the card approval and its unknown result still get the card checks"
+      },
+      "expect": "the grant context was let go"
     }
   ],
   "retired": []
