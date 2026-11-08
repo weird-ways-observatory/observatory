@@ -53,8 +53,8 @@ interface CardCount { day: string; charged: number; seq: number; pending?: strin
 interface Meta { seq: number; day: string; used: number; bytes: number; open: Open[]; op_used?: number; op_open?: OpOpen[]; expired?: { tap: number; op: number }; card?: CardCount }
 // `grant_hash`: the front desk's hash of the grant, kept only if it matches the hash worked out here from
 // the request's own fields (passkey.ts grantHashOf); Ben's passkey answer must carry it.
-// `card` / `expires_at`: a card request's card id and expiry (card 586da182); absent on every other grant.
-interface Grant { job: string; request: string; opened: number; grant_hash?: string; card?: string; expires_at?: number; stages: Partial<Record<Stage, Receipt>> }
+// `card` / `expires_at` / `requester`: a card request's card id, expiry and requester (card 586da182); absent on every other grant.
+interface Grant { job: string; request: string; opened: number; grant_hash?: string; card?: string; expires_at?: number; requester?: string; stages: Partial<Record<Stage, Receipt>> }
 // `day`: the UTC day its slot was charged to. `pool`: absent = tap (every record before B2).
 interface Pending { key: string; stored: string; storedSha: string; receipt: Receipt; day: string; pool?: "tap" | "op" }
 interface Keys { priv: string; pub: string } // base64 PKCS#8 and raw Ed25519 public key
@@ -266,7 +266,7 @@ export class Ledger {
       if (onCard && cardUsed(meta, t) + STAGE_SLOTS > CARD_SHARE) return { status: 429, why: `today's ${CARD_SHARE} card slots are taken`, word: "card_share_full" };
       if (onCard && meta.bytes + reservedBytes(meta) + STAGE_SLOTS * MAX_STORED_BYTES > RUN_CUTOFF_BYTES) return { status: 429, why: "the recorder's storage is past the card cutoff", word: "card_cutoff" };
       meta = { ...meta, used: meta.used + STAGE_SLOTS, open: [...meta.open, { grant: r.grant, opened: t, left: STAGE_SLOTS - 1, ...(onCard ? { card: true as const } : {}) }] };
-      next = { job: r.job, request: sha, opened: t, ...(await grantHashOf(r).then((h) => (h && r.grant_hash === h ? { grant_hash: h } : {}))), ...(onCard ? { card: r.card as string, ...(Number.isSafeInteger(r.expires_at) ? { expires_at: r.expires_at as number } : {}) } : {}), stages: {} };
+      next = { job: r.job, request: sha, opened: t, ...(await grantHashOf(r).then((h) => (h && r.grant_hash === h ? { grant_hash: h } : {}))), ...(onCard ? { card: r.card as string, ...(Number.isSafeInteger(r.expires_at) ? { expires_at: r.expires_at as number } : {}), ...(typeof r.requester === "string" ? { requester: r.requester } : {}) } : {}), stages: {} };
     } else {
       if (!grant) return { status: 409, why: "no request is recorded for this grant" };
       if (t - grant.opened > GRANT_TTL_MS) return { status: 410, why: "this grant's request is over 24 hours old" };

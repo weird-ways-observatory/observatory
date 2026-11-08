@@ -1299,6 +1299,292 @@
         "name": "git refusals: anything but one exact main record in a well-formed advertisement is an error, never a sha"
       },
       "expect": "no capabilities on the first ref"
+    },
+    {
+      "id": "c-membership",
+      "row": "T1",
+      "file": "src/card.ts",
+      "find": "if (!g.grant_hash || !m.entries.includes(g.grant_hash))",
+      "replace": "if (!g.grant_hash)",
+      "why": "card 586da182: threat 1: grant not on the signed card",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threats 1-3: a manifest without this grant, or changed in any way after Ben signed it, is refused"
+      },
+      "expect": "this grant is not on the card Ben approved"
+    },
+    {
+      "id": "c-requester",
+      "row": "T1",
+      "file": "src/card.ts",
+      "find": "  if (m.requester !== g.requester) return",
+      "replace": "  if (false) return",
+      "why": "card 586da182: commit review: card requester bound to the request",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threats 1-3: a manifest without this grant, or changed in any way after Ben signed it, is refused"
+      },
+      "expect": "the manifest names another requester"
+    },
+    {
+      "id": "c-card-hash",
+      "row": "T2",
+      "file": "src/recorder/ledger.ts",
+      "find": "const refused = await this.approvals(r, c ? c.hash : g.grant_hash);",
+      "replace": "const refused = await this.approvals(r, g.grant_hash);",
+      "why": "card 586da182: threat 2: passkey checked over the card hash",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "allowed: a 2-entry card stores both approvals with Ben's one answer; results done, failed and unknown are stored"
+      },
+      "expect": "409 !== 201"
+    },
+    {
+      "id": "c-eligible-request",
+      "row": "T5",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (onCard && (!isCardId(r.card) || !CARD_ELIGIBLE.includes(r.job)))",
+      "replace": "if (onCard && !isCardId(r.card))",
+      "why": "card 586da182: threat 5: eligible list at request",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threats 5-6: ineligible job at request and at approval; kinds must agree with the request's card mark"
+      },
+      "expect": "cannot be on a card"
+    },
+    {
+      "id": "c-eligible-approval",
+      "row": "T5",
+      "file": "src/card.ts",
+      "find": "  if (!CARD_ELIGIBLE.includes(g.job)) return",
+      "replace": "  if (false) return",
+      "why": "card 586da182: threat 5: eligible list at approval",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threats 5-6: ineligible job at request and at approval; kinds must agree with the request's card mark"
+      },
+      "expect": "this job is not allowed on a card"
+    },
+    {
+      "id": "c-kinds",
+      "row": "T6",
+      "file": "src/card.ts",
+      "find": "return marked ? { status: 409, why: \"a card approval for a request that is not on a card\" } : undefined;",
+      "replace": "return undefined;",
+      "why": "card 586da182: threat 6: kinds agree",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threats 5-6: ineligible job at request and at approval; kinds must agree with the request's card mark"
+      },
+      "expect": "a card approval for a request that is not on a card"
+    },
+    {
+      "id": "c-deadline-now",
+      "row": "T4",
+      "file": "src/card.ts",
+      "find": "if (now > m.deadline)",
+      "replace": "if (now > m.deadline + 1)",
+      "why": "card 586da182: threat 4: recorder time by the deadline",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threat 4: deadline -1 ms and exact are stored, +1 ms is 410; a deadline past expiry + 15 min is refused"
+      },
+      "expect": "at deadline 1 ms"
+    },
+    {
+      "id": "c-deadline-bound",
+      "row": "T4",
+      "file": "src/card.ts",
+      "find": "if (!Number.isSafeInteger(g.expires_at) || m.deadline > g.expires_at! + CARD_RUN_MS)",
+      "replace": "if (!Number.isSafeInteger(g.expires_at))",
+      "why": "card 586da182: threat 4: deadline bounded by expiry + 15 min",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threat 4: deadline -1 ms and exact are stored, +1 ms is 410; a deadline past expiry + 15 min is refused"
+      },
+      "expect": "past its grants' expiry"
+    },
+    {
+      "id": "c-recheck",
+      "row": "S4",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (checked.ok && !(await this.#approvalRefusal(checked.record, g0, now))) return false;",
+      "replace": "if (checked.ok && !(await this.approvals(checked.record, g0.grant_hash))) return false;",
+      "why": "card 586da182: S4: one check used at the pre-store re-check (without it the in-accept re-check withdraws every card approval)",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "S4/T2: an approval held pending over an outage is re-checked with the finishing call's time: stored at the deadline, withdrawn 1 ms after"
+      },
+      "expect": "410 !== 503"
+    },
+    {
+      "id": "c-outcome",
+      "row": "T13",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (r.stage === \"result\" && grant.card !== undefined && !(typeof r.outcome === \"string\" && CARD_OUTCOMES.includes(r.outcome)))",
+      "replace": "if (false)",
+      "why": "card 586da182: threat 13: card outcomes",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threat 13: a card entry's result must be done, failed or unknown; an ordinary grant's result is unchanged"
+      },
+      "expect": "must be done, failed or unknown"
+    },
+    {
+      "id": "c-share",
+      "row": "T7",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (onCard && cardUsed(meta, t) + STAGE_SLOTS > CARD_SHARE)",
+      "replace": "if (onCard && cardUsed(meta, t) + STAGE_SLOTS > DAY_CAP)",
+      "why": "card 586da182: threat 7: 100-slot card share",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threat 7: the card share full is 429 card_share_full while a single test.echo request still gets 201"
+      },
+      "expect": "card slots are taken"
+    },
+    {
+      "id": "c-cutoff",
+      "row": "T7",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (onCard && meta.bytes + reservedBytes(meta) + STAGE_SLOTS * MAX_STORED_BYTES > RUN_CUTOFF_BYTES)",
+      "replace": "if (false)",
+      "why": "card 586da182: threat 7: 5 GiB card cutoff",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threat 7: a card request that would pass 5 GiB counting its own reservation is card_cutoff; a single tap still passes"
+      },
+      "expect": "past the card cutoff"
+    },
+    {
+      "id": "c-receipt-sig",
+      "row": "T11",
+      "file": "src/recorder/ledger.ts",
+      "find": "receiptSealed(bare))) };",
+      "replace": "receiptSealed({ ...bare, seq: bare.seq + 1 }))) };",
+      "why": "card 586da182: threat 11: signed receipts",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "receipts: sig verifies with the status key over receipt/v1, and never crosses over with an envelope signature"
+      },
+      "expect": "the receipt signature does not verify"
+    },
+    {
+      "id": "c-receipt-label",
+      "row": "T11",
+      "file": "src/contract.ts",
+      "find": "JSON.stringify({ kind: \"receipt/v1\", v: r.v,",
+      "replace": "JSON.stringify({ v: r.v,",
+      "why": "card 586da182: threat 11: receipt/v1 domain label (status key verifies only the labelled bytes)",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "receipts: sig verifies with the status key over receipt/v1, and never crosses over with an envelope signature"
+      },
+      "expect": "Expected values to be strictly deep-equal"
+    },
+    {
+      "id": "c-withdraw-refund",
+      "row": "T8",
+      "file": "src/recorder/ledger.ts",
+      "find": "const c = chargeCard(m, g, p.day === m.day ? -1 : 0);",
+      "replace": "const c = chargeCard(m, g, 0);",
+      "why": "card 586da182: threat 8: unverified withdrawal",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threat 8: an unverified withdrawal and a late-stage withdrawal give the card share back exactly"
+      },
+      "expect": "the unverified withdrawal did not give the card slot back"
+    },
+    {
+      "id": "c-midnight-charge",
+      "row": "T8",
+      "file": "src/recorder/ledger.ts",
+      "find": "m = chargeCard({ ...m, used: m.used + 1 }, g);",
+      "replace": "m = { ...m, used: m.used + 1 };",
+      "why": "card 586da182: threat 8: midnight re-charge counts toward the share",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "threat 8 / APPROACH row 15: a pending card request re-charged after midnight counts toward the new day's share"
+      },
+      "expect": "used: 3"
+    },
+    {
+      "id": "c-seq-gap",
+      "row": "S1",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (m.card && (c.seq !== m.seq || c.pending !== pendingKey))",
+      "replace": "if (m.card && c.pending !== pendingKey)",
+      "why": "card 586da182: S1: seq marker",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "S1: new -> old -> new across midnight: old code writing a record blocks cards for the rest of that UTC day, then the share is rebuilt from card holds"
+      },
+      "expect": "card slots are taken"
+    },
+    {
+      "id": "c-pending-gap",
+      "row": "T1",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (m.card && (c.seq !== m.seq || c.pending !== pendingKey))",
+      "replace": "if (m.card && c.seq !== m.seq)",
+      "why": "card 586da182: T1: pending marker",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "T1: old code finishing this version's pending card write (with a recharge over midnight), or withdrawing it, blocks cards for that day"
+      },
+      "expect": "request grant-t1-02"
+    },
+    {
+      "id": "c-incomplete-watermark",
+      "row": "T12",
+      "file": "src/runcheck.ts",
+      "find": "e.deadline + CARD_RESULT_MS < through) {",
+      "replace": "e.deadline + CARD_RESULT_MS < now) {",
+      "why": "card 586da182: threat 12: missing result only past a complete read",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "missing result: raised only once a complete read passes deadline + 1 h; never on a stalled read; cleared by done, failed or unknown"
+      },
+      "expect": "a stalled read raised a missing result"
+    },
+    {
+      "id": "c-unknown",
+      "row": "D3",
+      "file": "src/runcheck.ts",
+      "find": "  if (record.outcome === \"unknown\") out.push(",
+      "replace": "  if (false) out.push(",
+      "why": "card 586da182: D3: unknown alerts once",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "card-late for a result after deadline + 1 h; card-unknown once and not repeated; done and failed raise nothing"
+      },
+      "expect": "card-unknown:grant-lt-03"
+    },
+    {
+      "id": "c-challenge",
+      "row": "T2",
+      "file": "src/runcheck.ts",
+      "find": "if (!v || challengeHash(record.assertion) !== v.hash)",
+      "replace": "if (!v)",
+      "why": "card 586da182: checker: challenge over the card hash",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "card-bad: a card approval stored around the recorder with a bad manifest, a deadline past expiry, or an answer not over the card hash"
+      },
+      "expect": "card-bad:grant-cb-03"
+    },
+    {
+      "id": "c-no-context",
+      "row": "S2",
+      "file": "src/runcheck.ts",
+      "find": "return record.approval_kind !== undefined || record.manifest !== undefined ? [await cardBad(grant, seq, \"a card approval with no card request the checker holds (no request context)\")] : [];",
+      "replace": "return [];",
+      "why": "card 586da182: S2: no request context",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "S2: new -> old -> new checker with an old-checker save between a card request and its approval: card-bad (no request context), nothing else lost"
+      },
+      "expect": "card-bad:grant-s2-01:2"
     }
   ],
   "retired": []

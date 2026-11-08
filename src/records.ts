@@ -14,7 +14,7 @@
 import { alert, redact, type AlertEnv } from "./alert.ts";
 import { DAY_CAP, GRANT_TTL_MS, MAX_STORED_BYTES, ROOT, sealed, sha256, SKEW_MS, unb64, validate, type Envelope, type Stage } from "./contract.ts";
 import { isOpStage, nameOf, OPS_FROM, poolUse, validateOp, type AnyStage, type Op, type OpResult } from "./ops.ts";
-import { badOp, capacityFindings, countBytes, fp, loadOps, measures, onApproval, onOp, onRequest, onResult, poolFindings, pruneDays, settle, type OpsState } from "./runcheck.ts";
+import { badOp, capacityFindings, countBytes, fp, loadCards, loadOps, measures, onApproval, onCardApproval, onCardRequest, onCardResult, onOp, onRequest, onResult, poolFindings, pruneDays, settle, settleCards, type CardsState, type OpsState } from "./runcheck.ts";
 import { readLockLength, type LockEnv } from "./lock.ts";
 
 export interface RecordsEnv extends AlertEnv, LockEnv {
@@ -54,7 +54,7 @@ interface Open { job: string; req: string; at: number; stages: Stage[] }
 // `sealed`: numbers from the pin's start up to `to` were confirmed signed under the pin with this key.
 // `held`/`snap` come only from the checker before signing; they are read once, never saved again.
 // `alerted`/`queued` come only from the checker before af0e4a2f: read once to carry what was told.
-interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedFull?: boolean; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[]; ops?: OpsState }
+interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedFull?: boolean; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[]; ops?: OpsState; cards?: CardsState }
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -66,7 +66,7 @@ const pad = (n: number) => String(n).padStart(12, "0");
 // How a grant id appears in alerts (runcheck.ts fp): a fingerprint, never the id. Grant findings also name the record number.
 export { fp };
 // Worst first: what ran unrecorded or unchecked before what is merely malformed.
-const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "op-unsettled", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
+const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "card-bad", "card-incomplete", "card-unknown", "card-late", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "op-unsettled", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
 const LOW = RANK.indexOf("junk"); // junk and stray: cheap for a writer to make by the thousand
 const kind = (id: string) => id.split(":")[0];
 const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 ? RANK.length : i; };
@@ -261,6 +261,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     else if (n.length) seq = Math.min(seq, Math.min(...n) - 1);
   }
   const ops = loadOps(prev.ops); // run ops (card 1a272a5c): defaults empty for a state from before
+  const cards = loadCards(prev.cards); // card approvals (card 586da182): the same
   let ended = false, tailClear = false; // the read reached an empty next number; nothing higher is listed
   let swept = Array.isArray(prev.swept) ? prev.swept.filter(isFinding).filter((f) => !OLD_FOREIGN.test(f.id)).slice(0, MAX_SWEPT + 1) : [];
   const findings: Finding[] = [];
@@ -405,10 +406,12 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
               findings.push(...(stage === "op" ? await onOp(ops, next, r.record as unknown as Op, r.env!.sha256, t, job, opsFrom) : await onResult(ops, next, r.record as unknown as OpResult, t)));
             } else {
               // Signed time, so tap reservation ages match the recorder (W1; Codex r1 #2).
-              const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, Date.parse(r.env!.recorded_at), next, shown);
+              const at = Date.parse(r.env!.recorded_at);
+              const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, at, next, shown);
               if (f) findings.push(f);
-              else if (stage === "request") onRequest(ops, grant, next, r.env!.sha256, r.job!, r.record!, Date.parse(r.env!.recorded_at));
-              else if (stage === "approval") onApproval(ops, grant, r.request);
+              else if (stage === "request") onRequest(ops, grant, next, r.env!.sha256, r.job!, r.record!, at), findings.push(...(await onCardRequest(cards, grant, next, r.env!.sha256, r.job!, r.record!, at)));
+              else if (stage === "approval") onApproval(ops, grant, r.request), findings.push(...(await onCardApproval(cards, grant, next, r.record!, at)));
+              else if (stage === "result") findings.push(...(await onCardResult(cards, grant, next, r.record!, at)));
             }
           }
         } catch {
@@ -438,6 +441,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   for (const [d, n] of Object.entries(days)) if (n > DAY_CAP) findings.push({ id: `cap:${d}`, text: `${n} records stored on ${d}, over the cap of ${DAY_CAP}` });
   // Run ops: a complete read moves the watermark (W4); then pools, the op day cap and storage (W8, X4).
   findings.push(...(await settle(ops, now.getTime(), verdict === "ran" && checked < PAGE && ended && tailClear)));
+  findings.push(...(await settleCards(cards, now.getTime(), ops.through))); // after the watermark moves
   const use = poolUse(now.getTime(), { tap: days[day(now)] ?? 0, op: ops.days[day(now)] ?? 0 }, Object.values(open).map((g) => ({ opened: g.at, stored: g.stages.length })), Object.values(ops.open));
   findings.push(...poolFindings(ops, day(now), use, DAY_CAP), ...capacityFindings(ops, now.getTime(), use.reserved_bytes));
   pruneDays(ops, now.getTime());
@@ -534,7 +538,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   }
   if (verdict === "ran") reason = `${checked} new records read; ${listed.length} open incident${listed.length === 1 ? "" : "s"}${listed.length ? `: ${listed.map((i) => i.text).join("; ")}` : ""}`;
   try {
-    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull, unverifiedTold, reminded, ops } satisfies State));
+    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull, unverifiedTold, reminded, ops, cards } satisfies State));
   } catch {
     reason = `records state could not be saved; ${reason}`;
     verdict = "unverified";

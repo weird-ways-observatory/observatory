@@ -24,7 +24,7 @@ export const CARD_OUTCOMES: readonly string[] = Object.freeze(["done", "failed",
 /** What Ben's tap covers, exactly these six keys. `deadline`: epoch ms, the latest any entry may start. */
 export interface Manifest { kind: "card/v1"; card: string; requester: string; entries: string[]; deadline: number; jobs_version: number }
 /** What a grant carries for the card rules: its job, the request's card id, its checked grant hash and expiry. */
-export interface CardGrant { job: string; card?: string; grant_hash?: string; expires_at?: number }
+export interface CardGrant { job: string; card?: string; grant_hash?: string; expires_at?: number; requester?: string }
 
 const SHA = /^[0-9a-f]{64}$/;
 const KEYS = ["card", "deadline", "entries", "jobs_version", "kind", "requester"];
@@ -76,6 +76,9 @@ export async function cardApproval(r: WriterRecord, g: CardGrant, now: number): 
   const m = parseManifest(r.manifest);
   if (typeof m === "string") return { status: 409, why: m };
   if (m.card !== g.card) return { status: 409, why: "the manifest names another card" };
+  // Each grant hash covers its own requester; the card's must be the same one (commit security review).
+  // `jobs_version` is the vault's job-template version: covered by Ben's signature, not the recorder's to judge.
+  if (m.requester !== g.requester) return { status: 409, why: "the manifest names another requester" };
   if (!CARD_ELIGIBLE.includes(g.job)) return { status: 409, why: "this job is not allowed on a card" };
   if (!g.grant_hash || !m.entries.includes(g.grant_hash)) return { status: 409, why: "this grant is not on the card Ben approved" };
   if (!Number.isSafeInteger(g.expires_at) || m.deadline > g.expires_at! + CARD_RUN_MS) return { status: 409, why: "the card's deadline is past its grants' expiry" };
