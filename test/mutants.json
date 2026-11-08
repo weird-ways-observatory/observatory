@@ -1650,6 +1650,71 @@
         "name": "Codex build r2 gap: the missing-result rule is the card's deadline + 1 h, even when that is past the grant's 24 h"
       },
       "expect": "raised before the card's deadline + 1 h"
+    },
+    {
+      "id": "c4-repo-id-recorder",
+      "row": "T17",
+      "file": "src/recorder/ledger.ts",
+      "find": "if (noRepo) return",
+      "replace": "if (noRepo === \"never\") return",
+      "why": "card 77ec1e64: recorder refuses a done gh.repo.create result without repo_id",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "T17: a done gh.repo.create card result is stored only with a digits repo_id; no other result may carry one"
+      },
+      "expect": "409"
+    },
+    {
+      "id": "c4-repo-id-digits",
+      "row": "T17",
+      "file": "src/card.ts",
+      "find": "has && typeof r.repo_id === \"string\" && REPO_ID.test(r.repo_id) ? undefined",
+      "replace": "has ? undefined",
+      "why": "card 77ec1e64: repo_id must be a digits string",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "T17: a done gh.repo.create card result is stored only with a digits repo_id; no other result may carry one"
+      },
+      "expect": "409"
+    },
+    {
+      "id": "c4-repo-id-elsewhere",
+      "row": "T17",
+      "file": "src/card.ts",
+      "find": "return has ? \"only a done gh.repo.create result may carry a repo_id\" : undefined;",
+      "replace": "return undefined;",
+      "why": "card 77ec1e64: no other result carries a repo_id",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "T17: a done gh.repo.create card result is stored only with a digits repo_id; no other result may carry one"
+      },
+      "expect": "409"
+    },
+    {
+      "id": "c4-repo-id-checker",
+      "row": "T17",
+      "file": "src/runcheck.ts",
+      "find": "if (noRepo) out.push",
+      "replace": "if (noRepo === \"never\") out.push",
+      "why": "card 77ec1e64: checker re-checks repo_id",
+      "test": {
+        "file": "test/cards-checker.test.ts",
+        "name": "card 77ec1e64 T17: a done gh.repo.create result without a digits repo_id, or a repo_id on another job's result, is card-bad"
+      },
+      "expect": "card-bad"
+    },
+    {
+      "id": "c4-eligible",
+      "row": "T5",
+      "file": "src/card.ts",
+      "find": "\"cf.audit.read\", \"gh.repo.create\"]",
+      "replace": "\"cf.audit.read\"]",
+      "why": "card 77ec1e64: gh.repo.create is card-eligible",
+      "test": {
+        "file": "test/cards.test.ts",
+        "name": "T5: gh.repo.create is on the Observatory's card list: a card request for it is stored"
+      },
+      "expect": "409"
     }
   ],
   "retired": []

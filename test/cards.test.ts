@@ -323,3 +323,35 @@ test("Codex build r1 #1: a change-over seen only by refused card requests and st
   assert.equal((await cardStatus(s.l, Date.parse("2026-11-09T00:30:00.000Z"))).blocked, false, "status shows tomorrow blocked");
   await requested(s.l, "grant-r1-04", { t: Date.parse("2026-11-09T01:00:00.000Z") }); // no ordinary record in between
 });
+
+// Card 77ec1e64 (REFINE-77ec1e64 X1, Y1; threat table T5, T17): gh.repo.create is card-eligible, and its done
+// result must carry GitHub's repo_id (digits) -- the durable evidence the nightly check and M1 match by id.
+const repoResult = (grant: string, request: string, outcome: string, extra: object = {}, job = "gh.repo.create") => JSON.stringify({ v: 1, grant, stage: "result", job, request, outcome, ...extra });
+test("T17: a done gh.repo.create card result is stored only with a digits repo_id; no other result may carry one", async () => {
+  const s = await setup(), J = { job: "gh.repo.create" };
+  const A = await requested(s.l, "grant-ri-01", J);
+  assert.equal((await s.l.accept(await approval(s, "grant-ri-01", A.request, manifest([A.hash]), J), at(T0))).status, 201);
+  const must = "a done gh.repo.create result must carry GitHub's repo_id (digits)";
+  await refused(s, repoResult("grant-ri-01", A.request, "done"), 409, must);
+  await refused(s, repoResult("grant-ri-01", A.request, "done", { repo_id: 1234567 }), 409, must);
+  await refused(s, repoResult("grant-ri-01", A.request, "done", { repo_id: "0123" }), 409, must);
+  await refused(s, repoResult("grant-ri-01", A.request, "done", { repo_id: "12a4" }), 409, must);
+  await refused(s, repoResult("grant-ri-01", A.request, "done", { repo_id: "1".repeat(21) }), 409, must);
+  const only = "only a done gh.repo.create result may carry a repo_id";
+  await refused(s, repoResult("grant-ri-01", A.request, "unknown", { repo_id: "1234567" }), 409, only);
+  assert.equal((await s.l.accept(repoResult("grant-ri-01", A.request, "done", { repo_id: "1234567" }), at(T0 + MIN))).status, 201);
+  // Another job's result, on a card or not, never carries one.
+  const B = await requested(s.l, "grant-ri-02");
+  assert.equal((await s.l.accept(await approval(s, "grant-ri-02", B.request, manifest([B.hash])), at(T0))).status, 201);
+  await refused(s, repoResult("grant-ri-02", B.request, "done", { repo_id: "1234567" }, "test.echo"), 409, only);
+  const O = await requested(s.l, "grant-ri-03", { card: null });
+  const ordinary = JSON.stringify({ v: 1, grant: "grant-ri-03", stage: "approval", job: "test.echo", request: O.request, grant_hash: "x", approved_at: 1, assertion: await s.key.answer(O.hash) });
+  assert.equal((await s.l.accept(ordinary, at(T0))).status, 201);
+  await refused(s, repoResult("grant-ri-03", O.request, "done", { repo_id: "1234567" }, "test.echo"), 409, only);
+  assert.equal((await refusedCount(s.l, T0 + MIN)).card_refused, 7, "the six card refusals and the test.echo card one count as card_refused; the ordinary one does not");
+});
+
+test("T5: gh.repo.create is on the Observatory's card list: a card request for it is stored", async () => {
+  const s = await setup();
+  await requested(s.l, "grant-rj-01", { job: "gh.repo.create" });
+});

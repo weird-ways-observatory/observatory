@@ -11,15 +11,28 @@ import { canonical } from "./recorder/passkey.ts";
 
 /**
  * Jobs a card may hold, the Observatory's own list (APPROACH §13): changed only by a PR Ben merges in an org
- * no agent can reach. Empty refuses every card (an off switch beside the vault's). gh.repo.create joins in
- * card build 4, with the job itself.
+ * no agent can reach. Empty refuses every card (an off switch beside the vault's). gh.repo.create joined in
+ * card build 4 (77ec1e64): the vault makes an empty private repo on Ben's card tap.
  */
-export const CARD_ELIGIBLE: readonly string[] = Object.freeze(["test.echo", "cf.zone.read", "cf.dns.list", "cf.audit.read"]);
+export const CARD_ELIGIBLE: readonly string[] = Object.freeze(["test.echo", "cf.zone.read", "cf.dns.list", "cf.audit.read", "gh.repo.create"]);
 export const CARD_SHARE = 100; // of the tap pool's 400 daily slots: at most 25 card entries a UTC day
 export const CARD_MAX = 5; // entries on one card
 export const CARD_RUN_MS = 15 * 60_000; // a card's deadline is at most its grants' expiry + this
 export const CARD_RESULT_MS = 3_600_000; // the checker expects each entry's result by deadline + this
 export const CARD_OUTCOMES: readonly string[] = Object.freeze(["done", "failed", "unknown"]);
+
+/** The repo-maker job (card 77ec1e64). Its `done` result names the repo GitHub made by id, so the nightly check and M1 can match it. */
+export const REPO_JOB = "gh.repo.create";
+const REPO_ID = /^[1-9][0-9]{0,19}$/;
+/**
+ * Why a result's `repo_id` is refused, or undefined (REFINE-77ec1e64 X1, Y1): a `done` gh.repo.create result must
+ * carry GitHub's repository id as a string of digits; no other result may carry one. Used by the recorder and the checker.
+ */
+export function repoIdRefusal(r: Record<string, unknown>): string | undefined {
+  const has = Object.hasOwn(r, "repo_id");
+  if (r.job === REPO_JOB && r.outcome === "done") return has && typeof r.repo_id === "string" && REPO_ID.test(r.repo_id) ? undefined : "a done gh.repo.create result must carry GitHub's repo_id (digits)";
+  return has ? "only a done gh.repo.create result may carry a repo_id" : undefined;
+}
 
 /** What Ben's tap covers, exactly these six keys. `deadline`: epoch ms, the latest any entry may start. */
 export interface Manifest { kind: "card/v1"; card: string; requester: string; entries: string[]; deadline: number; jobs_version: number }

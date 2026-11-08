@@ -204,3 +204,17 @@ test("Codex build r2 gap: the missing-result rule is the card's deadline + 1 h, 
   await w.run(deadline + CARD_RESULT_MS + 20 * MIN);
   assert.deepEqual(w.cardIds(), ["card-incomplete:grant-fd-01"]);
 });
+
+test("card 77ec1e64 T17: a done gh.repo.create result without a digits repo_id, or a repo_id on another job's result, is card-bad", async () => {
+  const w = await world(), J = { job: "gh.repo.create" };
+  const entry = async (grant: string, rec: object, over: object = J) => {
+    const R = await w.request(grant, T0, over), m = w.manifest([R.hash]);
+    await w.put(grant, "approval", { ...over, request: R.sha, grant_hash: "x", approval_kind: "card/v1", manifest: m, assertion: await w.key.answer(await cardHashOf(m)) }, T0 + MIN);
+    await w.put(grant, "result", { ...over, request: R.sha, ...rec }, T0 + 2 * MIN);
+  };
+  await entry("grant-ri-01", { outcome: "done", repo_id: "1234567" });
+  await entry("grant-ri-02", { outcome: "done" });
+  await entry("grant-ri-03", { outcome: "done", repo_id: "1234567" }, { job: "test.echo" });
+  await w.run(T0 + HOUR);
+  assert.deepEqual(w.cardIds().sort(), ["card-bad:grant-ri-02:6", "card-bad:grant-ri-03:9"]);
+});
