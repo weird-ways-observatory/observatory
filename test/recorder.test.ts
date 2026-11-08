@@ -149,7 +149,8 @@ test("6f681cc1: an object at its next exact name moves the record to a tagged na
   assert.deepEqual([r.seq, Number(m[1]), m[2], m[3]], [1, 1, G, "request"]);
   assert.equal(await sealedOk(l, b, r.key), true);
   assert.equal(b.store.get(keyFor(1, G, "request"))!.body, "planted"); // the plant is left for the checker to report
-  assert.deepEqual((st.m.get(`g:${G}`) as { stages: { request: Receipt } }).stages.request, r); // a retry gets the same receipt
+  const { sig: _, ...unsigned } = r; // the receipt's signature is added when answering, never stored (card 586da182)
+  assert.deepEqual((st.m.get(`g:${G}`) as { stages: { request: Receipt } }).stages.request, unsigned); // a retry gets the same receipt
   assert.deepEqual(await l.accept(rec("request"), at(1)), { status: 200, receipt: r });
   // The storage budget is charged the stored envelope's real size, tag included (Codex r2).
   assert.equal((st.m.get("meta") as { bytes: number }).bytes, new TextEncoder().encode(b.store.get(r.key)!.body).length);

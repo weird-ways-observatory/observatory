@@ -8,9 +8,7 @@ import { approvalCheck, coseToJwk, derToRaw, grantHashOf, PASSKEY_PIN, type Pass
 
 // Card 7190ab0a: the recorder stores an approval only if Ben's pinned passkey signed it for that grant.
 const NOW = () => new Date("2026-11-02T12:00:00Z");
-const ORIGIN = "https://desk.example", RP = "desk.example";
-const b64u = (b: Uint8Array) => Buffer.from(b).toString("base64url");
-const digest = async (b: Uint8Array | string) => new Uint8Array(await crypto.subtle.digest("SHA-256", typeof b === "string" ? new TextEncoder().encode(b) : b));
+import { b64u, digest, ORIGIN, pinFor, rawToDer, RP, softKey } from "./softkey.ts";
 
 function bucket() {
   const store = new Map<string, string>();
@@ -20,33 +18,6 @@ function bucket() {
     async list(o: { prefix?: string }) { return { objects: [...store.keys()].filter((k) => k.startsWith(o.prefix ?? "")).map((key) => ({ key })) } as unknown as R2Objects; },
     async put(k: string, body: string) { store.set(k, body); return {} as R2Object; },
   };
-}
-
-/** A software passkey: a P-256 key, its COSE public key, and WebAuthn-shaped answers with DER signatures. */
-async function softKey(id = "cred-ben-1") {
-  const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
-  const jwk = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
-  const x = Buffer.from(jwk.x!, "base64url"), y = Buffer.from(jwk.y!, "base64url");
-  // {1: 2, 3: -7, -1: 1, -2: x, -3: y}
-  const cose = new Uint8Array([0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20, ...x, 0x22, 0x58, 0x20, ...y]);
-  return {
-    id, cose,
-    async answer(grantHash: string, o: { origin?: string; rp?: string; flags?: number; type?: string; id?: string; challenge?: Uint8Array; client?: object } = {}) {
-      const challenge = o.challenge ?? new Uint8Array([...crypto.getRandomValues(new Uint8Array(16)), ...Buffer.from(grantHash, "hex")]);
-      const clientData = new TextEncoder().encode(JSON.stringify({ type: o.type ?? "webauthn.get", challenge: b64u(challenge), origin: o.origin ?? ORIGIN, crossOrigin: false, ...o.client }));
-      const auth = new Uint8Array([...(await digest(o.rp ?? RP)), o.flags ?? 0x1d, 0, 0, 0, 0]);
-      const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, pair.privateKey, new Uint8Array([...auth, ...(await digest(clientData))])));
-      return { passkey_id: o.id ?? id, authenticator_data: b64u(auth), client_data_json: b64u(clientData), signature: b64u(rawToDer(raw)) };
-    },
-  };
-}
-function rawToDer(raw: Uint8Array): Uint8Array {
-  const int = (v: Uint8Array) => { let i = 0; while (i < 31 && v[i] === 0) i++; v = v.slice(i); return v[0] & 0x80 ? [0x02, v.length + 1, 0, ...v] : [0x02, v.length, ...v]; };
-  const body = [...int(raw.slice(0, 32)), ...int(raw.slice(32))];
-  return new Uint8Array([0x30, body.length, ...body]);
-}
-async function pinFor(k: { id: string; cose: Uint8Array }): Promise<PasskeyPin> {
-  return { id: k.id, key: b64u(k.cose), rp_hash: Buffer.from(await digest(RP)).toString("hex"), origin_hash: await sha256(ORIGIN) };
 }
 
 const JOB = "test.echo";

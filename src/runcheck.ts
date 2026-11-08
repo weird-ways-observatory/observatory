@@ -4,7 +4,9 @@
 // rules and the op format live in ops.ts, shared with B's recorder. Nothing here refuses anything: it
 // raises findings, and keeps run and op state in its own maps, apart from the grant map records.ts
 // prunes (threat 11), so an op id equal to a grant id never collides (threat 10).
-import { MAX_STORED_BYTES, SKEW_MS, sha256, STORE_BUDGET_BYTES } from "./contract.ts";
+import { GRANT_TTL_MS, MAX_STORED_BYTES, SKEW_MS, sha256, STORE_BUDGET_BYTES, type WriterRecord } from "./contract.ts";
+import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_RESULT_MS, cardApproval, challengeHash, isCardId } from "./card.ts";
+import { grantHashOf } from "./recorder/passkey.ts";
 import { OP_DAY_CAP, parseDescriptor, RESULT_MS, RUN_CUTOFF_BYTES, RUN_MAX_MS, RUN_OPEN_JOB, uncovered, type Op, type OpResult, type RunSeen } from "./ops.ts";
 import type { Finding } from "./records.ts";
 
@@ -194,3 +196,76 @@ export const measures = (s: OpsState, use: { tap: number; op: number; reserved_b
   ops_incomplete: s.incomplete, results: s.resolved, result_delay_max_ms: s.delay_max,
   bytes: { written: s.written, reserved: use.reserved_bytes, by_kind: s.kinds, per_slot_max: MAX_STORED_BYTES },
 });
+
+// Card approvals (card 586da182; REFINE-586da182 Outcome 7, S2, S3, T3, D3). Kept apart from the grant map
+// records.ts prunes, under `cards` in the saved state. Per card grant, from its request: job, request hash,
+// card id, expiry, and the grant hash only when this checker's own grantHashOf matches the request's (S3).
+// A card approval re-runs the recorder's checks (card.ts cardApproval) timed by its signed recorded_at, and
+// its challenge must carry the card hash; the passkey signature is not re-verified (the recorder did, as for
+// ordinary approvals). Records without a card mark or `approval_kind` are untouched.
+interface CardEntry { job: string; req: string; card: string; at: number; seq: number; exp?: number; by?: string; hash?: string; deadline?: number; end?: "result" | "incomplete" | "lapsed"; read?: number }
+export type CardsState = Record<string, CardEntry>;
+/** True while a card grant may still need its request context: not yet resolved by a result or an incident. */
+export const cardOpen = (s: CardsState, g: string) => Object.hasOwn(s, g) && !s[g].end;
+/** The saved card state, or empty where it is missing or from before this card (a reverted checker drops it). */
+export const loadCards = (x: unknown): CardsState => bare<CardEntry>(Object.fromEntries(Object.entries(x && typeof x === "object" ? x : {}).filter(([, v]) => v && typeof v === "object")));
+/** A card-bad finding: one per record, the grant shown as a fingerprint, the reason a fixed phrase. */
+const cardBad = async (grant: string, seq: number, why: string): Promise<Finding> => ({ id: `card-bad:${grant}:${seq}`, text: `card grant ${await fp(grant)} (record ${seq}): ${why}` });
+
+/** A request that passed the order check: a card request is kept for its approval and result. */
+export async function onCardRequest(s: CardsState, grant: string, seq: number, sha: string, job: string, record: Record<string, unknown>, at: number): Promise<Finding[]> {
+  if (record.card === undefined) return [];
+  const h = await grantHashOf(record as WriterRecord);
+  s[grant] = { job, req: sha, card: String(record.card), at, seq, ...(Number.isSafeInteger(record.expires_at) ? { exp: record.expires_at as number } : {}), ...(typeof record.requester === "string" ? { by: record.requester } : {}), ...(h && record.grant_hash === h ? { hash: h } : {}) };
+  return isCardId(record.card) && CARD_ELIGIBLE.includes(job) ? [] : [await cardBad(grant, seq, "a card request whose card id or job is not allowed on a card")];
+}
+
+/** An approval that passed the order check. Any card mark with no card request held is `card-bad` (S2: e.g. after a checker revert). */
+export async function onCardApproval(s: CardsState, grant: string, seq: number, record: Record<string, unknown>, at: number): Promise<Finding[]> {
+  const e = Object.hasOwn(s, grant) ? s[grant] : undefined;
+  if (!e) return record.approval_kind !== undefined || record.manifest !== undefined ? [await cardBad(grant, seq, "a card approval with no card request the checker holds (no request context)")] : [];
+  const v = await cardApproval(record as WriterRecord, { job: e.job, card: e.card, grant_hash: e.hash, expires_at: e.exp, requester: e.by }, at);
+  if (v && "why" in v) return [await cardBad(grant, seq, v.why)];
+  if (!v || challengeHash(record.assertion) !== v.hash) return [await cardBad(grant, seq, "Ben's passkey answer is not over this card's hash")];
+  e.deadline = v.manifest.deadline;
+  return [];
+}
+
+/** A result that passed the order check: for a card grant, its outcome; late after deadline + 1 h; `unknown` alerts once (D3). */
+export async function onCardResult(s: CardsState, grant: string, seq: number, record: Record<string, unknown>, at: number): Promise<Finding[]> {
+  const e = Object.hasOwn(s, grant) ? s[grant] : undefined;
+  if (!e) return [];
+  const out: Finding[] = [], shown = `card grant ${await fp(grant)} (record ${seq})`;
+  if (!(typeof record.outcome === "string" && CARD_OUTCOMES.includes(record.outcome))) out.push(await cardBad(grant, seq, "a result whose outcome is not done, failed or unknown"));
+  if (e.deadline !== undefined && (e.end === "incomplete" || at > e.deadline + CARD_RESULT_MS)) out.push({ id: `card-late:${grant}:${seq}`, text: `${shown}: its result came over an hour after the card's deadline` });
+  if (record.outcome === "unknown") out.push({ id: `card-unknown:${grant}`, text: `${shown}: the result is unknown -- the job may have run; do not tap it again` });
+  e.end = "result";
+  return out;
+}
+
+/**
+ * After the hour's read: a card approval with no result by deadline + 1 h is `card-incomplete`, raised only
+ * once a complete read has passed that time (`through`, the run-op watermark), so a stalled read never alarms.
+ * Entries are let go 3 days after their request is behind the watermark, or 30 days after first held.
+ */
+export async function settleCards(s: CardsState, now: number, through: number | undefined): Promise<Finding[]> {
+  const out: Finding[] = [];
+  for (const [g, e] of Object.entries(s)) {
+    e.read ??= now;
+    const due = e.deadline === undefined ? undefined : e.deadline + CARD_RESULT_MS; // the card's rule: deadline + 1 h
+    if (through !== undefined && !e.end) {
+      if (due !== undefined && due < through) {
+        out.push({ id: `card-incomplete:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) has no result an hour after its card's deadline: it may not have run, or ran unrecorded` });
+        e.end = "incomplete";
+      } else if (due === undefined && e.at + GRANT_TTL_MS + CARD_RESULT_MS < through) e.end = "lapsed"; // never approved; no stage can be stored after 24 h
+    }
+    // No entry is let go unresolved in silence (Codex build r1 #2, r2 #3): still unresolved 30 days after this
+    // checker first held it (approved or not), it becomes its own standing incident, and only then goes.
+    if (!e.end && e.read < now - 30 * DAY_MS) {
+      out.push({ id: `card-unsettled:${g}`, text: `card grant ${await fp(g)} (record ${e.seq}) could not be settled within 30 days of being read: its card checks may never run` });
+      e.end = "incomplete";
+    }
+    if (e.end && ((through ?? 0) > e.at + 3 * DAY_MS || e.read < now - 30 * DAY_MS)) delete s[g];
+  }
+  return out;
+}
