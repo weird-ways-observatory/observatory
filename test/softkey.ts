@@ -33,4 +33,3 @@ export function rawToDer(raw: Uint8Array): Uint8Array {
 export async function pinFor(k: { id: string; cose: Uint8Array }): Promise<PasskeyPin> {
   return { id: k.id, key: b64u(k.cose), rp_hash: Buffer.from(await digest(RP)).toString("hex"), origin_hash: await sha256(ORIGIN) };
 }
-

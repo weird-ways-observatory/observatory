@@ -71,6 +71,7 @@ const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const len = (s: string) => new TextEncoder().encode(s).length;
 const held = (m: Meta) => ({ tap: m.open.reduce((n, o) => n + o.left, 0), op: (m.op_open ?? []).reduce((n, o) => n + o.left, 0) });
 const reservedBytes = (m: Meta) => (held(m).tap + held(m).op) * MAX_STORED_BYTES;
+/** Slots still held by card grants for their later stages. */
 const cardHeld = (m: Meta) => m.open.reduce((n, o) => n + (o.card ? o.left : 0), 0);
 /** The card share in use today: blocked after a change-over (S1, T1), else charged + card holds. */
 const cardUsed = (m: Meta, t: number) => (m.card?.blocked === day(t) ? CARD_SHARE : (m.card?.charged ?? 0) + cardHeld(m));

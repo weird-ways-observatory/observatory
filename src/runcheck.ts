@@ -207,6 +207,7 @@ interface CardEntry { job: string; req: string; card: string; at: number; seq: n
 export type CardsState = Record<string, CardEntry>;
 /** The saved card state, or empty where it is missing or from before this card (a reverted checker drops it). */
 export const loadCards = (x: unknown): CardsState => bare<CardEntry>(Object.fromEntries(Object.entries(x && typeof x === "object" ? x : {}).filter(([, v]) => v && typeof v === "object")));
+/** A card-bad finding: one per record, the grant shown as a fingerprint, the reason a fixed phrase. */
 const cardBad = async (grant: string, seq: number, why: string): Promise<Finding> => ({ id: `card-bad:${grant}:${seq}`, text: `card grant ${await fp(grant)} (record ${seq}): ${why}` });
 
 /** A request that passed the order check: a card request is kept for its approval and result. */
