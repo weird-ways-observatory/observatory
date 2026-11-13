@@ -69,11 +69,12 @@ async function world() {
   };
   const env = { RECORDS: b, COPY: copy } as unknown as RecordsEnv;
   const run = (t: number, e: RecordsEnv = env) => runRecords(e, async () => new Response("", { status: 500 }), new Date(t), pin, undefined, CF_FROM);
+  const runWith = (e: RecordsEnv, f: (r: Request) => Promise<Response>, t: number) => runRecords(e, f, new Date(t), pin, undefined, CF_FROM);
   const state = () => JSON.parse(copy.store.get(STATE_KEY)!.body);
   const fx = (): Fx => state().effects;
   /** cfaudit's matching acknowledgement (12.2): `m.done` inside state/cfaudit.json. */
   const done = (grants: string[]) => copy.store.set(CFAUDIT_KEY, { body: JSON.stringify({ v: 1, m: { done: grants } }), etag: "cfaudit" });
-  return { b, copy, put, tap, run, env, state, fx, done, seq: () => seq };
+  return { b, copy, put, tap, run, runWith, env, state, fx, done, seq: () => seq };
 }
 
 test("effects: an honest tap per Cloudflare-master job and path is kept whole; other jobs get no entry", async () => {
@@ -166,8 +167,21 @@ test("covered_to: a quiet run moves it to run start - skew - margin; an unverifi
   assert.equal(u.records, "unverified");
   assert.equal(w.fx().covered_to, t2 - SKEW_MS - WRITE_MARGIN_MS, "an unverified run moved covered_to");
   w.b.failList(false);
+  // A run that read to the end of the bookmark but saw a higher number (a gap): ran, yet not covered.
+  const gap = keyFor(w.seq() + 2, "grant-gp-0001", "request");
+  w.b.store.set(gap, { body: "{}", uploaded: new Date(t2) });
+  const g = await w.run(t2 + 90 * MIN);
+  assert.equal(g.records, "ran", g.reason);
+  assert.equal(w.fx().covered_to, t2 - SKEW_MS - WRITE_MARGIN_MS, "a run that saw a higher number moved covered_to");
+  w.b.store.delete(gap);
+  // The daily count cannot finish (too many objects at one number): unverified though the hourly read reached the end.
+  for (let i = 0; i < 21; i++) w.b.store.set(keyFor(1, "grant-cv-01", "request", i.toString(16).padStart(16, "0")), { body: "{}", uploaded: new Date(t2) });
+  const day = Date.parse("2026-11-14T04:30:00.000Z"), c = await w.run(day);
+  assert.equal(c.records, "unverified", c.reason);
+  assert.equal(w.fx().covered_to, t2 - SKEW_MS - WRITE_MARGIN_MS, "an unverified daily-count run moved covered_to");
+  for (let i = 0; i < 21; i++) w.b.store.delete(keyFor(1, "grant-cv-01", "request", i.toString(16).padStart(16, "0")));
   for (let i = 0; i < PAGE; i++) await w.put(`grant-bl-${String(i).padStart(4, "0")}`, "request", { job: "test.echo" }, t2 + HOUR + i);
-  const back = await w.run(t2 + 2 * HOUR);
+  const back = await w.run(day + HOUR);
   assert.equal(back.checked, PAGE);
   assert.equal(w.fx().covered_to, t2 - SKEW_MS - WRITE_MARGIN_MS, "a backlog run moved covered_to");
 });
@@ -177,8 +191,8 @@ test("save: gen counts saves; a throw or a null at the save leaves effects and b
   await w.tap("grant-cr-01", "cf.dns.list", T, { cf: LISTS });
   await w.run(T + HOUR);
   const first = w.fx();
-  assert.equal(first.gen, 1);
-  assert.equal(first.since, T + HOUR);
+  assert.equal(first.gen, 1, "gen is not 1 after the first save");
+  assert.equal(first.since, T + HOUR, "since is not the first save's time");
   await w.tap("grant-cr-02", "cf.zone.read", T + 3 * HOUR, { cf: LISTS }, { card: true });
   for (const fail of ["throw", "null"] as const) {
     const before = w.copy.store.get(STATE_KEY)!.body;
@@ -242,6 +256,8 @@ test("retention: an entry is retired only after res.at + 72 h AND cfaudit's m.do
   assert.equal(w.fx().grants["grant-rt-01"], undefined, "an acknowledged entry past 72 h was not retired");
   assert.equal(w.fx().retired["grant-rt-01"], at, "the retirement was not recorded");
   assert.equal(w.fx().index[String(s.res!.n)], "grant-rt-01", "the index was dropped at retirement");
+  await w.run(at + INDEX_KEEP_MS - HOUR);
+  assert.equal(w.fx().index[String(s.res!.n)], "grant-rt-01", "the index was dropped before 30 days");
   await w.run(at + INDEX_KEEP_MS + HOUR);
   assert.equal(w.fx().index[String(s.res!.n)], undefined, "the index outlived 30 days after retirement");
   assert.equal(w.fx().retired["grant-rt-01"], undefined);
@@ -274,10 +290,48 @@ test("cap: a replayed record with a standing finding is tainted, as if read live
   const stamp = { n: 0, sha: "0".repeat(64), at: T - 10 * DAY };
   const grants = Object.fromEntries(Array.from({ length: MAX_EFFECTS }, (_, i) => [`grant-ful-${String(i).padStart(4, "0")}`, { job: "cf.dns.list", path: "ordinary", req: stamp, appr: stamp, res: stamp, cf: "none" }]));
   w.copy.store.set(STATE_KEY, { body: JSON.stringify({ seq: 0, effects: { gen: 1, since: 0, covered_to: 0, grants, retired: {}, index: {} } }), etag: "seed" });
-  await w.tap("grant-cpb-01", "cf.dns.list", T, { cf: LISTS }, { verdict: { cf: LISTS } });
+  const s = await w.tap("grant-cpb-01", "cf.dns.list", T, { cf: LISTS });
+  // Something wrote around the recorder at the approval's number: the finding names only that number.
+  w.b.store.set(keyFor(s.appr.n, "grant-cpb-01", "approval", "0123456789abcdef"), { body: "{}", uploaded: new Date(T + MIN) });
+  await w.tap("grant-cpb-02", "cf.dns.list", T, { cf: LISTS }, { verdict: { request: "f".repeat(64) } }); // mismatch names only the grant
   await w.run(T + HOUR);
-  w.done(["grant-ful-0000"]);
+  w.done(["grant-ful-0000", "grant-ful-0001"]);
   await w.run(T + 2 * HOUR);
-  const e = w.fx().grants["grant-cpb-01"];
-  assert.ok(e && e.tainted && !e.res, "a replayed grant with a standing finding was not tainted");
+  const e = w.fx().grants["grant-cpb-01"], f = w.fx().grants["grant-cpb-02"];
+  assert.ok(e && e.tainted && !e.res, "a replayed record with a standing finding on its number was not tainted");
+  assert.ok(f && f.tainted, "a replayed grant with a standing finding on the grant was not tainted");
+});
+
+test("retired: a finding on a retired grant's record raises one incident and is kept for re-judging; the run does not throw", async () => {
+  const w = await world();
+  const s = await w.tap("grant-rv-01", "cf.dns.list", T, { cf: LISTS });
+  await w.run(T + HOUR);
+  w.done(["grant-rv-01"]);
+  const retiredAt = Date.parse("2026-11-17T03:30:00.000Z"); // past res.at + 72 h
+  await w.run(retiredAt);
+  assert.equal(w.fx().grants["grant-rv-01"], undefined);
+  w.b.store.set(keyFor(s.res!.n, "grant-rv-01", "result", "0123456789abcdef"), { body: "{}", uploaded: new Date(retiredAt) });
+  const r = await w.run(Date.parse("2026-11-18T04:30:00.000Z")).catch((x) => assert.fail(`effects threw out of the run: ${x}`)); // the daily count reads the plant
+  assert.equal(r.records, "ran", `a finding on a retired record broke the run: ${r.reason}`);
+  const ids = (w.state().incidents as { id: string; text: string }[]);
+  assert.ok(ids.some((i) => i.id === `retired-bad:${s.res!.n}` && i.text.includes(`a record found bad after its judgments were retired: record ${s.res!.n}`)), "no retired-record incident was raised");
+  assert.equal((w.fx() as Fx & { revoked: Record<string, string> }).revoked[String(s.res!.n)], "grant-rv-01", "the retired record was not kept for re-judging");
+});
+
+test("guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved", async () => {
+  for (const [where, bad] of [["the main read", "x"], ["after the read", null]] as const) {
+    const w = await world();
+    // A saved entry that is not an object: "x" throws when the read projects its request, null when retention reads it.
+    w.copy.store.set(STATE_KEY, { body: JSON.stringify({ seq: 0, effects: { gen: 1, since: 0, covered_to: 0, grants: { "grant-str-01": bad }, retired: {}, index: {} } }), etag: "seed" });
+    if (bad === "x") await w.put("grant-str-01", "request", { job: "cf.dns.list" }, T);
+    await w.put("grant-ur-01", "result", { job: "test.echo", request: "a".repeat(64), outcome: "done" }, T + MIN); // ran unrecorded
+    const pushes: string[] = [];
+    const fetch = async (req: Request) => { const u = new URL(req.url); if (u.hostname === "api.pushover.net") pushes.push(new URLSearchParams(await req.text()).get("message") ?? ""); return new Response("{}", { status: u.hostname === "api.cloudflare.com" ? 500 : 200 }); };
+    const e = { ...w.env, PING_URL: "https://hc.example/main", PING_URL_RECORDS: "https://hc.example/rec", PUSHOVER_TOKEN: "t".repeat(30), PUSHOVER_USER: "u".repeat(30) } as RecordsEnv;
+    const r2 = await w.runWith(e, fetch, T + HOUR).catch((x) => assert.fail(`effects threw out of the run (${where}): ${x}`));
+    assert.equal(r2.records, "unverified", `a throw in effects ${where} did not mark the run unverified`);
+    assert.match(r2.reason, /effects/, `the unverified reason does not name effects (${where})`);
+    assert.ok((w.state().incidents as { id: string }[]).some((i) => i.id === "unrecorded:grant-ur-01"), `an existing finding was not saved when effects threw ${where}`);
+    assert.ok(pushes.some((p) => p.includes("ran unrecorded")), `an existing finding was not alerted when effects threw ${where}`);
+  }
 });
