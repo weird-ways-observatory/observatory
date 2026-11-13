@@ -4,7 +4,7 @@
 // against them. Design: studio-os docs/specifications/trust-but-verify/REFINE-beec640b-build-b.md v3.3, sections
 // 4.4-4.7 as overridden by 12 and 13. Working state is `m` inside state/cfaudit.json, saved in cfaudit's one
 // conditional save (B-D5). Two append-only objects sit beside it: state/cfepochs.json (activations, 12.5) and
-// state/cfindex/<YYYY-MM>.json (retired associations, 13.3). Alert words never hold a key id or a written name.
+// state/cfindex/<YYYY-MM>.json (record number -> tap -> matched events, written before a tap is acknowledged done, 13.3). Alert words never hold a key id or a written name.
 import { GRANT_TTL_MS } from "./contract.ts";
 import { judge, type Judged, type Who } from "./cfjudge.ts";
 import { ref, SETTLE_MS } from "./cfaudit.ts";
@@ -26,8 +26,8 @@ const ALLOW: Record<string, [number, number, "p" | "h"]> = { "cf.audit.read": [1
 interface Stamp { n: number; at: number }
 interface Grant { job: string; req?: Stamp; appr?: Stamp; res?: Stamp; cf?: { made: string[]; deleted: string[] } | "unknown" | "none"; tainted?: string }
 interface Effects { gen: number; since: number; covered_to: number; grants: Record<string, Grant>; retired: Record<string, number>; revoked: Record<string, string>; replay_from?: number }
-/** One master event: action, key id, time, success, epoch; `s`/`x` name kind and expiry (creates); `g`/`j`/`r` its tap once matched; `o` lifetime decided. */
-export interface Ev { id: string; a: "create" | "delete"; k: string; t: number; ok: boolean; ep: number; s?: string; x?: number; g?: string; j?: string; r?: number; o?: 1 }
+/** One master event: action, key id, time, success, epoch; `s`/`x` name kind and expiry (creates); `g`/`j`/`r` its tap once matched; `o` lifetime decided; `i` in the index. */
+export interface Ev { id: string; a: "create" | "delete"; k: string; t: number; ok: boolean; ep: number; s?: string; x?: number; g?: string; j?: string; r?: number; o?: 1; i?: 1 }
 export interface M { t: number; ep: number; from?: number; since?: number; gen?: number; cov: number; pend: Ev[]; expl: Ev[]; late: Ev[]; hc: Record<string, number>; done: string[]; rev: string[]; rj: string[]; rp?: { s: number; from: number; ids: string[]; to: number; runs: number } }
 
 const isO = (x: unknown): x is Record<string, any> => typeof x === "object" && x !== null && !Array.isArray(x);
@@ -164,18 +164,20 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number }; m?: 
   /** After the read: revocation, retirement, late results, pending judgments, reverse and lifetime checks, done (4.3-4.7, 12.2-12.4, 13.3). */
   async function finish(through: number, week: Record<string, number>) {
     if (fx && !hold) {
-      const out: Record<string, Record<string, Ev[]>> = {};
+      const out = new Set<string>();
       for (const ev of [...m.expl]) {
         const e = Object.hasOwn(fx.grants, ev.g!) ? fx.grants[ev.g!] : undefined;
         if (e?.tainted || (!e && !reset && !Object.hasOwn(fx.retired, ev.g!))) unexplain(ev), m.expl.splice(m.expl.indexOf(ev), 1);
-        else if (!e && Object.hasOwn(fx.retired, ev.g!)) ((out[month(fx.retired[ev.g!])] ??= {})[ev.g!] ??= []).push(ev);
+        else if (!e && Object.hasOwn(fx.retired, ev.g!)) out.add(ev.g!);
       }
-      for (const [mo, gs] of Object.entries(out)) if (await retire(mo, gs)) m.expl = m.expl.filter((x) => !Object.hasOwn(gs, x.g!));
-      for (const [n, g] of Object.entries(fx.revoked)) if (!m.rj.includes(n)) {
-        const evs = await lookup(g);
-        if (evs === undefined) continue;
-        if (!evs.length) add(`unavailable:record:${n}`, `matching incomplete: record ${n} was found bad after its tap retired, and no matched events are on file for it`);
-        for (const ev of evs) unexplain(ev);
+      // A retired tap's events leave working state once they are in the index (all are, unless matched after done).
+      const gone = [...out].filter((g) => m.expl.some((x) => x.g === g && !x.i));
+      if (!gone.length || (await index(gone.map((g) => ({ g, ns: [] }))))) m.expl = m.expl.filter((x) => !out.has(x.g!));
+      for (const [n, named] of Object.entries(fx.revoked)) if (!m.rj.includes(n)) {
+        const hit = await lookup(n);
+        if (hit === undefined) continue;
+        if (!hit.g && named) add(`unavailable:record:${n}`, `matching incomplete: record ${n} was found bad after its tap retired, and no matched events are on file for it`);
+        for (const ev of hit.evs) unexplain(ev); // a number no tap's index names was never matched: nothing to re-judge
         m.rj.push(n);
       }
       m.rj = m.rj.filter((n) => Object.hasOwn(fx!.revoked, n));
@@ -194,12 +196,12 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number }; m?: 
     }
     const old = m.pend.reduce((a, x) => Math.min(a, x.t), Infinity);
     if (T - old > STALE_MS) add(`incomplete:${old}`, `matching incomplete: ${word(m.pend.length, "master write")} waiting since ${iso(old)}`);
-    if (fx && !hold && m.ep) checks(through);
+    if (fx && !hold && m.ep) m.done = await acknowledge(checks(through));
     for (const [k, n] of Object.entries(counts)) week[k] = (week[k] ?? 0) + n;
     if (on) add(`on:${m.ep}`, `Cloudflare matching on: master writes judged from ${iso(m.from!)}: ${Object.entries(counts).filter(([k]) => k.startsWith("master writes matched")).reduce((a, [, n]) => a + n, 0)} matched, ${counts["master writes unmatched"] ?? 0} unmatched, ${m.pend.length} pending`);
   }
-  /** Reverse check, outlived helpers, and the done acknowledgement records retires by (4.7, 12.2, 12.3). */
-  function checks(through: number) {
+  /** Reverse check and outlived helpers; returns the taps whose matching is complete (4.7, 12.2, 12.3). */
+  function checks(through: number): string[] {
     for (const [g, e] of Object.entries(fx!.grants)) {
       if (!isO(e.cf) || e.tainted || !e.appr || !e.res || e.appr.at < m.from! || m.rev.includes(g) || through <= e.res.at + SETTLE_MS) continue;
       const want = [...e.cf.made.map((k) => ["create", k]), ...e.cf.deleted.map((k) => ["delete", k])];
@@ -219,23 +221,37 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number }; m?: 
       add(`outlived:${ev.id}`, `a key made by the front desk's master key at ${iso(ev.t)}, ref ${ref(ev.id)}, was not deleted within a day (tap ${(ev.g ?? "").slice(0, 8)})`);
       ev.o = 1;
     }
-    m.done = Object.entries(fx!.grants).filter(([g, e]) => {
+    return Object.entries(fx!.grants).filter(([g, e]) => {
       const end = e.res?.at ?? (e.req?.at ?? 0) + GRANT_TTL_MS, start = e.appr?.at ?? end;
       return through > end + SETTLE_MS && (!isO(e.cf) || e.tainted || !e.appr || start < m.from! || m.rev.includes(g))
         && !m.expl.some((x) => x.g === g && x.a === "create" && !x.o) && !m.pend.some((x) => x.t >= start && x.t <= end);
     }).map(([g]) => g);
   }
-  /** 13.3: appends retired taps' matched events to the month's append-only index; true once it landed. */
-  const retire = (mo: string, gs: Record<string, Ev[]>) => append<Record<string, Ev[]>>(copy, `${INDEX_PREFIX}${mo}.json`, (c) => {
-    const next = { ...c };
-    for (const [g, evs] of Object.entries(gs)) next[g] = [...(next[g] ?? []), ...evs.filter((e) => !(next[g] ?? []).some((x) => x.id === e.id))];
-    return next;
-  }).then(Boolean);
-  /** A retired tap's events from the monthly index, newest month first; undefined when a month could not be read. */
-  async function lookup(g: string): Promise<Ev[] | undefined> {
+  /** 12.2 with 13.3: a complete tap is acknowledged done only once its record numbers and matched events are in the index. */
+  async function acknowledge(cand: string[]) {
+    const need = cand.filter((g) => m.expl.some((x) => x.g === g && !x.i));
+    if (!need.length || (await index(need.map((g) => ({ g, ns: [fx!.grants[g].req?.n, fx!.grants[g].appr?.n, fx!.grants[g].res?.n] }))))) return cand;
+    return cand.filter((g) => !need.includes(g));
+  }
+  /** Appends to this month's append-only index: record number -> tap, tap -> its matched events not yet indexed. */
+  async function index(list: { g: string; ns: (number | undefined)[] }[]) {
+    const evs = m.expl.filter((x) => !x.i && list.some((l) => l.g === x.g));
+    const ok = await append<{ n: Record<string, string>; g: Record<string, Ev[]> }>(copy, `${INDEX_PREFIX}${month(T)}.json`, (c) => {
+      const next = { n: { ...c?.n }, g: { ...c?.g } };
+      for (const { g, ns } of list) for (const n of ns) if (n !== undefined) next.n[n] = g;
+      for (const ev of evs) if (!(next.g[ev.g!] ?? []).some((x) => x.id === ev.id)) next.g[ev.g!] = [...(next.g[ev.g!] ?? []), { ...ev, i: 1 }];
+      return next;
+    });
+    if (ok) for (const ev of evs) ev.i = 1;
+    return Boolean(ok);
+  }
+  /** The tap a record number belongs to, and its matched events, from every month of the index; undefined when unreadable. */
+  async function lookup(n: string): Promise<{ g?: string; evs: Ev[] } | undefined> {
     try {
-      for (let i = 0; i < INDEX_MONTHS; i++) { const ix = await readJson(copy, `${INDEX_PREFIX}${month(T, i)}.json`); if (isO(ix) && Array.isArray(ix[g])) return ix[g]; }
-      return [];
+      const files: any[] = [];
+      for (let i = 0; i < INDEX_MONTHS; i++) files.push(await readJson(copy, `${INDEX_PREFIX}${month(T, i)}.json`));
+      const g = files.map((f) => (isO(f) && isO(f.n) ? f.n[n] : undefined)).find(str);
+      return { g, evs: g ? files.flatMap((f) => (isO(f) && isO(f.g) && Array.isArray(f.g[g]) ? f.g[g] : [])) : [] };
     } catch { return undefined; }
   }
   const status = () => (hold || m.rp || open(/^(unavailable|incomplete):/) ? "incomplete" : m.ep ? "active" : "warming up");

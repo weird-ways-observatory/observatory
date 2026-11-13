@@ -18,6 +18,7 @@ import { badOp, capacityFindings, cardOpen, countBytes, fp, loadCards, loadOps, 
 import { readLockLength, type LockEnv } from "./lock.ts";
 import { CF_FROM, CF_JOBS, cfRefusal } from "./card.ts";
 import { STATE_KEY as CFAUDIT_KEY } from "./cfaudit.ts";
+import { EPOCHS_KEY } from "./cfmatch.ts";
 
 export interface RecordsEnv extends AlertEnv, LockEnv {
   RECORDS?: Pick<R2Bucket, "list" | "get">; // read and list only: this job never writes there
@@ -56,7 +57,8 @@ export const WRITE_MARGIN_MS = 2 * 60_000, EFFECTS_KEEP_MS = 72 * 3_600_000, IND
 interface Stamp { n: number; sha: string; at: number }
 interface Effect { job: string; path: "card" | "ordinary"; req?: Stamp; appr?: Stamp; res?: Stamp; cf?: { made: string[]; deleted: string[] } | "unknown" | "none"; tainted?: string }
 // `index`: record number -> grant, for live entries and 30 days after retirement (later revocation lookups).
-// `revoked`: record number -> retired grant, for a record found bad after its grant was retired (12.2), kept with the index.
+// `revoked`: record number -> retired grant, for a record found bad after its grant was retired (12.2), kept with the index;
+// past the index, "" (13.3): cfaudit resolves the number from its monthly index, kept while the finding stands.
 interface Effects { gen: number; since: number; covered_to: number; grants: Record<string, Effect>; retired: Record<string, number>; index: Record<string, string>; revoked: Record<string, string>; replay_from?: number }
 // Finding kinds that name one record number; any other finding names its grant second (`kind:grant[:n]`).
 const NUMBERED = /^(?:bad|foreign|forged|unreadable|missing|unsigned|duplicate-number|sweep:unreadable|sweep:crowded):(\d+)(?::|$)/;
@@ -66,6 +68,13 @@ function hitBy(fx: Effects, fid: string): { live?: string; retired?: { n: string
   if (Object.hasOwn(fx.grants, g)) return { live: g };
   if (byN !== undefined && Object.hasOwn(fx.grants, byN)) return { live: byN };
   return byN !== undefined ? { retired: { n: n!, grant: byN } } : {};
+}
+/** 12.5: the first record number uploaded at or after `t`; a number that cannot be listed counts as later, so the
+ * search errs early (records before the floor are only read again, never skipped). */
+async function firstAt(bucket: Pick<R2Bucket, "list">, hi: number, t: number): Promise<number> {
+  let lo = 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1, c = (await namesAt(bucket, `${ROOT}${pad(mid)}.`)).cands[0]; if (!c || c.uploaded.getTime() >= t) hi = mid; else lo = mid + 1; }
+  return lo;
 }
 /**
  * One tap record into `effects` (4.3). `bad`: the kind of the first finding this record raised. A new entry starts
@@ -314,6 +323,20 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   const pe = prev.effects && typeof prev.effects === "object" ? prev.effects : {}, num = (x: unknown, d: number) => (Number.isFinite(x) ? (x as number) : d);
   let fxErr: string | undefined; // a throw in the effects bookkeeping: the run is unverified, everything else goes on
   const fx: Effects = { gen: num(pe.gen, 0), since: num(pe.since, now.getTime()), covered_to: num(pe.covered_to, 0), grants: bare<Effect>(pe.grants), retired: bare<number>(pe.retired), index: bare<string>(pe.index), revoked: bare<string>(pe.revoked), ...(Number.isInteger(pe.replay_from) ? { replay_from: pe.replay_from } : {}) };
+  // cfaudit's matching state, read once: `done` retires entries (12.2); `t`, `pend` and `gen` place a rebuild (12.5).
+  const ca = await env.COPY.get(CFAUDIT_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.m : undefined)).catch(() => undefined);
+  try {
+    // 12.5: effects lost after records were read (a revert's save dropped them), or older than cfaudit last saw: a
+    // recovery, never a fresh start. The chains still needed are rebuilt by the replay below, from the first record at
+    // or after the floor: matching's checkpoint or oldest waiting event (else the last epoch) less a grant's life.
+    if (env.RECORDS && ((seq > 0 && !(pe.grants && typeof pe.grants === "object")) || (Number.isInteger(ca?.gen) && fx.gen < ca.gen))) {
+      const last = await env.COPY.get(EPOCHS_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.epochs?.at(-1)?.boundary : undefined));
+      const at = Number.isFinite(ca?.t) ? Math.min(ca.t, ...(Array.isArray(ca.pend) ? ca.pend.map((x: { t: number }) => x.t).filter(Number.isFinite) : [])) : last;
+      if (Number.isFinite(at)) Object.assign(fx, { gen: Math.max(fx.gen, num(ca?.gen, 0)), since: at - GRANT_TTL_MS - 3_600_000, covered_to: 0, grants: bare<Effect>({}), retired: bare<number>({}), index: bare<string>({}), revoked: bare<string>({}), replay_from: await firstAt(env.RECORDS, seq + 1, at - GRANT_TTL_MS - SKEW_MS) });
+    }
+  } catch {
+    fxErr ??= "the effects list could not be rebuilt";
+  }
   let ended = false, tailClear = false; // the read reached an empty next number; nothing higher is listed
   let swept = Array.isArray(prev.swept) ? prev.swept.filter(isFinding).filter((f) => !OLD_FOREIGN.test(f.id)).slice(0, MAX_SWEPT + 1) : [];
   const findings: Finding[] = [];
@@ -514,16 +537,18 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   // acknowledged as done (m.done, 12.2) once its result is 72 h old (no result: from its grant's end).
   // A finding on a retired grant's record is kept for cfaudit to re-judge (revoked) and raised once (12.2).
   try {
+    const standing = new Set<string>();
     for (const f of [...findings]) {
-      const h = hitBy(fx, f.id);
+      const h = hitBy(fx, f.id), n = NUMBERED.exec(f.id)?.[1];
+      if (n !== undefined) standing.add(n);
       if (h.live) fx.grants[h.live].tainted ??= kind(f.id);
       else if (h.retired) (fx.revoked[h.retired.n] = h.retired.grant), findings.push({ id: `retired-bad:${h.retired.n}`, text: `a record found bad after its judgments were retired: record ${h.retired.n}` });
+      else if (n !== undefined) fx.revoked[n] ??= ""; // any age (13.3)
     }
-    const ack = await env.COPY.get(CFAUDIT_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.m?.done : undefined)).catch(() => undefined);
-    const done = new Set(Array.isArray(ack) ? ack : []);
+    const done = new Set(Array.isArray(ca?.done) ? ca.done : []);
     for (const [g, e] of Object.entries(fx.grants)) if (now.getTime() - (e.res?.at ?? (e.req?.at ?? 0) + GRANT_TTL_MS) > EFFECTS_KEEP_MS && done.has(g)) delete fx.grants[g], (fx.retired[g] = now.getTime());
     for (const [n, g] of Object.entries(fx.index)) if (!Object.hasOwn(fx.grants, g) && !(now.getTime() - (fx.retired[g] ?? -Infinity) <= INDEX_KEEP_MS)) delete fx.index[n];
-    for (const n of Object.keys(fx.revoked)) if (!Object.hasOwn(fx.index, n)) delete fx.revoked[n];
+    for (const n of Object.keys(fx.revoked)) if (!Object.hasOwn(fx.index, n) && !standing.has(n)) delete fx.revoked[n];
     for (const [g, t] of Object.entries(fx.retired)) if (now.getTime() - t > INDEX_KEEP_MS) delete fx.retired[g];
   } catch {
     fxErr ??= "the effects list could not be updated after the read";

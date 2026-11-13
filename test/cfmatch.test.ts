@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCfAudit, STATE_KEY, SETTLE_MS } from "../src/cfaudit.ts";
 import { EPOCHS_KEY, MAX_PENDING, REPLAY_RUNS, RESULT_WAIT_MS, WARM_MS } from "../src/cfmatch.ts";
-import { b64, keyFor, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
+import { b64, GRANT_TTL_MS, keyFor, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
 import { CF_FROM } from "../src/card.ts";
 import { runRecords, STATE_KEY as RECORDS_KEY, type Pin, type RecordsEnv } from "../src/records.ts";
 import { grantHashOf } from "../src/recorder/passkey.ts";
@@ -322,25 +322,6 @@ test("row 21: a tap with unfinished matching is not acknowledged done; once fini
   assert.ok(!w3.m().done.includes("aaaaaaaa-1"), "a tap with a pending event in its window was acknowledged done");
 });
 
-test("row 22: a finding on a retired record re-judges its events from the monthly index, at any age", async () => {
-  const w = world({ "aaaaaaaa-1": grant("cf.dns.list", T, { made: [id(1)], deleted: [id(1)] }) });
-  add(w, mc("i1", T + 10_000, id(1)), md("i2", T + 11_000, id(1)));
-  await w.run(T + 2 * H);
-  const g = (w.fx.grants as any)["aaaaaaaa-1"];
-  delete (w.fx.grants as any)["aaaaaaaa-1"];
-  w.fx.retired["aaaaaaaa-1"] = T + 80 * H;
-  await w.run(T + 81 * H);
-  assert.equal(w.m().expl.length, 0, "retired associations stayed in working state");
-  const month = new Date(T + 80 * H).toISOString().slice(0, 7);
-  assert.ok(w.b.store.get(`state/cfindex/${month}.json`), "the monthly index was not written");
-  delete w.fx.retired["aaaaaaaa-1"]; // 31+ days on: the records side no longer keeps the retirement time
-  w.fx.revoked[String(g.res.n)] = "aaaaaaaa-1";
-  await w.run(T + 32 * 24 * H);
-  await w.run(T + 33 * 24 * H);
-  assert.deepEqual(w.has("unexplained-after:").map((i) => i.id).sort(), ["unexplained-after:i1", "unexplained-after:i2"], "a retired tap's events were not re-judged once from the index");
-  assert.deepEqual(w.m().rj, [String(g.res.n)], "the re-judged record was not remembered, so it would be re-judged again");
-});
-
 test("row 23: failed events carrying named ids explain nothing and satisfy nothing", async () => {
   const w = world({ "aaaaaaaa-1": grant("cf.dns.list", T, { made: [id(1)], deleted: [] }) });
   add(w, mc("f1", T + 10_000, id(1), { result: "failure" }));
@@ -490,13 +471,14 @@ async function signedWorld() {
     const body = JSON.stringify({ v: 1, grant, stage, ...rec }), sha = await sha256(body), n = ++seq;
     const e: Envelope = { v: 2, seq: n, grant, stage, recorded_at: new Date(t).toISOString(), sha256: sha, body };
     recs.store.set(keyFor(n, grant, stage), { body: JSON.stringify({ ...e, sig: b64(await crypto.subtle.sign("Ed25519", pair.privateKey, sealed(e))) }), uploaded: new Date(t) });
-    return sha;
+    return { n, sha };
   };
   const tap = async (grant: string, job: string, t: number, cf: unknown) => {
     const f = { v: 1 as const, grant, stage: "request" as const, job, params: {}, requester: "c-box agent", expires_at: t + 10 * MIN };
     const req = await put(grant, "request", { ...f, grant_hash: (await grantHashOf(f))! }, t);
-    await put(grant, "approval", { job, request: req }, t + MIN);
-    await put(grant, "result", { job, request: req, outcome: "done", cf }, t + 2 * MIN);
+    const appr = await put(grant, "approval", { job, request: req.sha }, t + MIN);
+    const res = await put(grant, "result", { job, request: req.sha, outcome: "done", cf }, t + 2 * MIN);
+    return { req: req.n, appr: appr.n, res: res.n };
   };
   const renv = { RECORDS: recs, COPY: b } as unknown as RecordsEnv;
   const records = (t: number) => runRecords(renv, async () => new Response("", { status: 500 }), new Date(t), pin, undefined, CF_FROM);
@@ -511,7 +493,7 @@ async function signedWorld() {
     return runs;
   };
   const inc = () => (state(b).incidents as { id: string; text: string; told: boolean }[]);
-  return { b, log, cf, tap, records, audit, crons, inc };
+  return { b, recs, log, cf, tap, records, audit, crons, inc, seq: () => seq };
 }
 const since = (w: Awaited<ReturnType<typeof signedWorld>>) => JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.since as number;
 
@@ -559,3 +541,123 @@ test("row 27: production path: an honest tap after activation matches, and the w
 });
 
 test("settle: SETTLE_MS is the 20 minutes the detection bound assumes", () => assert.equal(SETTLE_MS, 20 * MIN));
+
+test("row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS, t = Math.floor(on / H) * H + 2 * H + 5 * MIN, g = "5ca1ab1e-0000-4000-8000-000000000022";
+  const s = await w.tap(g, "cf.dns.list", t, { made: [id(1)], deleted: [id(1)] });
+  w.log.push(mc("j1", t + MIN + 1000, id(1)), md("j2", t + MIN + 2000, id(1)));
+  await w.crons(t0 + H, t + 4 * H);
+  assert.ok(state(w.b).m.done.includes(g), "the honest tap was not acknowledged done");
+  await w.records(t + 80 * H);
+  await w.audit(t + 80 * H + 15 * MIN);
+  assert.equal(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.grants[g], undefined, "the done tap was not retired");
+  assert.equal(state(w.b).m.expl.length, 0, "retired associations stayed in working state");
+  const late = Date.UTC(new Date(t + 35 * 24 * H).getUTCFullYear(), new Date(t + 35 * 24 * H).getUTCMonth(), new Date(t + 35 * 24 * H).getUTCDate(), 4, 30);
+  await w.records(late - 2 * H); // the records index for this tap has expired by now
+  assert.equal(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.index[String(s.res)], undefined, "test setup: the records index still held the record");
+  w.recs.store.set(keyFor(s.res, g, "result", "0123456789abcdef"), { body: "{}", uploaded: new Date(late - H) }); // written around the recorder
+  await w.records(late);
+  await w.audit(late + 15 * MIN);
+  await w.audit(late + 75 * MIN);
+  assert.deepEqual(w.inc().filter((i) => i.id.startsWith("unexplained-after:")).map((i) => i.id).sort(), ["unexplained-after:j1", "unexplained-after:j2"], "a retired tap's events were not re-judged once at 32 days");
+  assert.equal(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.index[String(s.res)], undefined, "test setup: the records index still held the record");
+  assert.ok(state(w.b).m.rj.includes(String(s.res)), "the re-judged record was not remembered, so it would be re-judged again");
+});
+
+test("row 22: a tap is acknowledged done only once its index entry landed", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS, t = Math.floor(on / H) * H + 2 * H + 5 * MIN, g = "5ca1ab1e-0000-4000-8000-000000000122";
+  await w.tap(g, "cf.dns.list", t, { made: [id(1)], deleted: [id(1)] });
+  w.log.push(mc("jj1", t + MIN + 1000, id(1)), md("jj2", t + MIN + 2000, id(1)));
+  const put = w.b.put.bind(w.b);
+  (w.b as any).put = async (k: string, ...a: any[]) => (k.startsWith("state/cfindex/") ? null : put(k, ...(a as [any, any])));
+  await w.crons(t0 + H, t + 4 * H);
+  assert.ok(!state(w.b).m.done.includes(g), "a tap was acknowledged done while its index entry could not be saved");
+});
+
+test("row 25 / 12.5: end to end, effects lost in a revert are rebuilt from the records: honest taps made while off match, an unnamed write still alerts", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS;
+  await w.crons(t0 + H, on + 2 * H);
+  // Build b is reverted for a few hours: build a's records check reads the new records and its save drops `effects`;
+  // build a's cfaudit moves the bookmark and keeps `m` as it is.
+  const t = on + 3 * H, g = "5ca1ab1e-0000-4000-8000-000000000025";
+  await w.tap(g, "cf.dns.list", t, { made: [id(1)], deleted: [id(1)] });
+  w.log.push(mc("k1", t + MIN + 1000, id(1)), md("k2", t + MIN + 2000, id(1)), mc("k3", t + MIN + 3000, id(9)));
+  const rs = JSON.parse(w.b.store.get(RECORDS_KEY)!.body);
+  rs.seq = w.seq(); if (rs.sealed) rs.sealed.to = w.seq(); delete rs.effects; delete rs.open?.[g];
+  w.b.store.set(RECORDS_KEY, { body: JSON.stringify(rs), etag: "builda-records" });
+  const cs = state(w.b);
+  cs.bm = { t: t + 2 * H, ids: [] };
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(cs), etag: "builda-cfaudit" });
+  await w.records(t + 2 * H + 30 * MIN);
+  const fx = JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects;
+  assert.ok(fx.grants[g]?.res, "the tap made while off was not rebuilt from the records");
+  assert.ok(fx.since + WARM_MS <= t, "the rebuilt effects do not cover the off period");
+  await w.crons(t + 2 * H + 40 * MIN, t + 6 * H);
+  const ch = w.inc().filter((i) => i.id.startsWith("change:"));
+  assert.deepEqual(ch.map((i) => i.id), ["change:k3"], "an honest write made while off was not matched after the rebuild, or the unnamed one did not alert");
+  assert.match(ch[0].text, /no approved tap names it/, "the unnamed write was called unmatchable instead of judged");
+  assert.ok(w.inc().some((i) => i.id.startsWith("gap:")), "no gap incident");
+});
+
+test("12.5: the rebuild starts at the first record at or after the floor, not at record one", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  for (let i = 0; i < 6; i++) await w.tap(`5ca1ab1e-0000-4000-8000-00000000010${i}`, "cf.dns.list", t0 + H + i * MIN, "unknown");
+  const on = since(w) + WARM_MS, after = "5ca1ab1e-0000-4000-8000-000000000199";
+  await w.crons(t0 + H, on + 20 * H);
+  await w.tap(after, "cf.dns.list", on + 20 * H + 5 * MIN, "unknown");
+  await w.crons(on + 20 * H, on + 30 * H);
+  const rs = JSON.parse(w.b.store.get(RECORDS_KEY)!.body);
+  delete rs.effects;
+  w.b.store.set(RECORDS_KEY, { body: JSON.stringify(rs), etag: "builda-records" });
+  const floor = state(w.b).m.t - GRANT_TTL_MS;
+  const reads: string[] = [], get = w.recs.get.bind(w.recs);
+  (w.recs as any).get = async (k: string) => (reads.push(k), get(k));
+  await w.records(on + 31 * H);
+  const first = JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects;
+  assert.ok(floor > t0 + 2 * H && floor < on + 20 * H, "test setup: the floor is not after the early taps");
+  assert.ok(first.grants[after], "a tap after the floor was not rebuilt");
+  assert.equal(Object.keys(first.grants).filter((k) => k.startsWith("5ca1ab1e-0000-4000-8000-00000000010")).length, 0, "records before the floor were rebuilt");
+});
+
+test("12.5: a records state older than cfaudit last saw (gen behind) is a recovery, not a silent restart", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS;
+  await w.crons(t0 + H, on + H);
+  const old = w.b.store.get(RECORDS_KEY)!;
+  await w.crons(on + H, on + 5 * H);
+  const seen = state(w.b).m;
+  w.b.store.set(RECORDS_KEY, { body: JSON.parse(JSON.stringify(old)).body, etag: "rolled-back" });
+  await w.records(on + 5 * H + 30 * MIN);
+  const fx = JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects;
+  assert.ok(fx.gen > seen.gen && fx.since === seen.t - GRANT_TTL_MS - H, "an older records state was not treated as a recovery");
+});
+
+test("12.5: effects and matching state both lost: records rebuilds from the last epoch boundary", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS, g = "5ca1ab1e-0000-4000-8000-000000000125";
+  await w.crons(t0 + H, on + H);
+  await w.tap(g, "cf.dns.list", on + H + 5 * MIN, "unknown");
+  await w.crons(on + H, on + 3 * H);
+  const rs = JSON.parse(w.b.store.get(RECORDS_KEY)!.body), cs = state(w.b);
+  delete rs.effects; delete cs.m;
+  w.b.store.set(RECORDS_KEY, { body: JSON.stringify(rs), etag: "lost-r" });
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(cs), etag: "lost-c" });
+  await w.records(on + 3 * H + 30 * MIN);
+  const fx = JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects;
+  assert.ok(fx.grants[g] && fx.since === on - GRANT_TTL_MS - H, "lost effects with no matching state were not rebuilt from the last epoch");
+});
