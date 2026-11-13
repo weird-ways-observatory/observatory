@@ -5,10 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { b64, keyFor, sealed, sha256, validate, type Envelope, type Stage } from "../src/contract.ts";
-import { CARD_RUN_MS, CF_FROM, CF_JOBS, CF_LIST_MAX, cfRefusal } from "../src/card.ts";
+import { CARD_RUN_MS, cardHashOf, CF_FROM, CF_JOBS, CF_LIST_MAX, cfRefusal, type Manifest } from "../src/card.ts";
 import { Ledger, type Bucket, type Storage } from "../src/recorder/ledger.ts";
 import { grantHashOf } from "../src/recorder/passkey.ts";
 import { runRecords, STATE_KEY, type Pin, type RecordsEnv } from "../src/records.ts";
+import { softKey } from "./softkey.ts";
 import { bucket, storage } from "./store.ts";
 
 const MIN = 60_000, HOUR = 60 * MIN;
@@ -67,8 +68,8 @@ type L = TestLedger;
 const why = (o: Awaited<ReturnType<Ledger["accept"]>>) => [o.status, "why" in o ? o.why : "", "why" in o ? o.word : undefined];
 
 /** Request and approval of one grant, ordinary or on a card, its request recorded at `t`. */
-async function opened(l: L, grant: string, job: string, t: number, card = false) {
-  const f = { v: 1 as const, grant, stage: "request" as const, job, params: {}, requester: "c-box agent", expires_at: t + 10 * MIN, ...(card ? { card: `card-${grant}` } : {}) };
+async function opened(l: L, grant: string, job: string, t: number, card = false, extra: object = {}) {
+  const f = { v: 1 as const, grant, stage: "request" as const, job, params: {}, requester: "c-box agent", expires_at: t + 10 * MIN, ...(card ? { card: `card-${grant}` } : {}), ...extra };
   const hash = (await grantHashOf(f))!, req = JSON.stringify({ ...f, grant_hash: hash });
   assert.equal((await l.accept(req, at(t))).status, 201, `request ${grant}`);
   const request = await sha256(req);
@@ -158,7 +159,7 @@ function listBucket() {
 }
 
 async function world(cfFrom = CF_FROM) {
-  const pair = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair;
+  const pair = (await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"])) as CryptoKeyPair, key = await softKey();
   const pin: Pin = { key: b64((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer), from: 1 };
   const b = listBucket(), copy = listBucket();
   let seq = 0;
@@ -169,20 +170,30 @@ async function world(cfFrom = CF_FROM) {
     return { sha, body, n };
   };
   /** A whole tap: request at t, approval, then a result with `over`; card grants carry a card mark (card checks are cards-checker.test.ts's). */
-  const tap = async (grant: string, job: string, t: number, over: object = {}, { card = false, approval = {} as object } = {}) => {
-    const r = await put(grant, "request", { job, ...(card ? { card: `card-${grant}` } : {}) }, t);
-    await put(grant, "approval", { job, request: r.sha, ...approval }, t + MIN);
+  // A card grant gets a real card/v1 approval (Ben's software passkey over the card hash), so the card checks pass
+  // and any finding left is the cf rule's. `request`: extra request fields (a writer-claimed time); `verdict`: a
+  // verdict record's extra fields, stored between approval and result.
+  const tap = async (grant: string, job: string, t: number, over: object = {}, { card = false, approval = {} as object, request = {} as object, verdict = undefined as object | undefined } = {}) => {
+    const f = { v: 1 as const, grant, stage: "request" as const, job, params: {}, requester: "c-box agent", expires_at: t + 10 * MIN, ...(card ? { card: `card-${grant}` } : {}), ...request };
+    const hash = (await grantHashOf(f))!;
+    const r = await put(grant, "request", { ...f, grant_hash: hash }, t);
+    const m: Manifest = { kind: "card/v1", card: `card-${grant}`, requester: "c-box agent", entries: [hash], deadline: t + 10 * MIN + CARD_RUN_MS, jobs_version: 1 };
+    const cardMark = card ? { grant_hash: hash, approval_kind: "card/v1", manifest: m, assertion: await key.answer(await cardHashOf(m)) } : {};
+    await put(grant, "approval", { job, request: r.sha, ...cardMark, ...approval }, t + MIN);
+    if (verdict) await put(grant, "verdict", { job, request: r.sha, ...verdict }, t + MIN + 30_000);
     return put(grant, "result", { job, request: r.sha, outcome: "done", ...over }, t + 2 * MIN);
   };
   const env = { RECORDS: b, COPY: copy } as unknown as RecordsEnv;
+  // Every incident but the bucket-lock setup one: the fake bucket has no retention lock (lock.ts), unrelated to cf.
+  const allIds = () => (copy.store.has(STATE_KEY) ? (JSON.parse(copy.store.get(STATE_KEY)!.body).incidents as { id: string }[]).map((i) => i.id).filter((i) => !i.startsWith("lock:")) : []);
   const run = (t: number, from = cfFrom) => runRecords(env, async () => new Response("", { status: 500 }), new Date(t), pin, undefined, from);
   const cfIds = () => (copy.store.has(STATE_KEY) ? (JSON.parse(copy.store.get(STATE_KEY)!.body).incidents as { id: string }[]).map((i) => i.id).filter((i) => i.startsWith("cf-bad:")) : []);
   /** A rebuild: the checker's saved state is dropped and every record is read again from the first. */
   const rebuild = (t: number, from = cfFrom) => (copy.store.delete(STATE_KEY), run(t, from));
-  return { b, put, tap, run, rebuild, cfIds };
+  return { b, put, tap, run, rebuild, cfIds, allIds };
 }
 
-test("checker: every master job, card and ordinary tap, at CF_FROM: a missing or malformed cf is flagged in the shared step; lists and unknown are not", async () => {
+test("checker: every master job, card and ordinary tap, at CF_FROM: a missing or malformed cf is flagged in the shared step; lists, 0, 16 and unknown are not", async () => {
   const w = await world();
   const combos = [...CF_JOBS.map((j) => [j, false] as const), ...CARD_JOBS.map((j) => [j, true] as const)];
   const want: string[] = [];
@@ -190,28 +201,64 @@ test("checker: every master job, card and ordinary tap, at CF_FROM: a missing or
   for (const [job, card] of combos) {
     const k = String(++n).padStart(2, "0");
     await w.tap(`grant-ok-${k}`, job, CF_FROM, { cf: LISTS }, { card });
-    await w.tap(`grant-un-${k}`, job, CF_FROM, { cf: "unknown" }, { card });
+    await w.tap(`grant-un-${k}`, job, CF_FROM, { cf: "unknown", outcome: card ? "failed" : "done" }, { card });
+    await w.tap(`grant-ze-${k}`, job, CF_FROM, { cf: { made: [], deleted: [] } }, { card });
+    await w.tap(`grant-16-${k}`, job, CF_FROM, { cf: { made: ids(16), deleted: ids(16, 20) } }, { card });
     want.push(`cf-bad:grant-no-${k}:${(await w.tap(`grant-no-${k}`, job, CF_FROM, {}, { card })).n}`);
-    want.push(`cf-bad:grant-bd-${k}:${(await w.tap(`grant-bd-${k}`, job, CF_FROM, { cf: { made: ids(17), deleted: [] } }, { card })).n}`);
+    for (const [i, [, cf]] of MALFORMED.entries()) {
+      const g = `grant-m${String(i).padStart(2, "0")}-${k}`;
+      want.push(`cf-bad:${g}:${(await w.tap(g, job, CF_FROM, { cf }, { card })).n}`);
+    }
   }
   await w.run(CF_FROM + HOUR);
   assert.deepEqual(w.cfIds().sort(), want.sort(), "the checker's cf findings are not exactly the missing and malformed results");
 });
 
-test("checker: cf on an approval, or on a non-master result, is flagged; a legacy grant without cf is not, and a rebuild over legacy results stays green", async () => {
+test("checker: cf on a request, approval or verdict, or on a non-master result, is flagged, before or after CF_FROM", async () => {
+  const w = await world(), want: string[] = [];
+  for (const [t, k] of [[CF_FROM - HOUR, "a"], [CF_FROM + HOUR, "b"]] as const) {
+    const rq = await w.tap(`grant-rq-0${k}`, "cf.dns.list", t, { cf: LISTS }, { request: { cf: LISTS } });
+    want.push(`cf-bad:grant-rq-0${k}:${rq.n - 2}`);
+    const ap = await w.tap(`grant-ap-0${k}`, "cf.dns.list", t, { cf: LISTS }, { approval: { cf: LISTS } });
+    want.push(`cf-bad:grant-ap-0${k}:${ap.n - 1}`);
+    const vd = await w.tap(`grant-vd-0${k}`, "cf.zone.read", t, { cf: LISTS }, { verdict: { cf: LISTS } });
+    want.push(`cf-bad:grant-vd-0${k}:${vd.n - 1}`);
+    for (const job of ["test.echo", "gh.repo.create"]) {
+      const g = `grant-nm-${job === "test.echo" ? "e" : "r"}${k}`;
+      want.push(`cf-bad:${g}:${(await w.tap(g, job, t, { cf: LISTS, ...(job === "gh.repo.create" ? { repo_id: "12345" } : {}) }, { card: true })).n}`);
+    }
+  }
+  await w.run(CF_FROM + 2 * HOUR);
+  assert.deepEqual(w.cfIds().sort(), want.sort(), "cf findings differ from the request, approval, verdict and non-master records");
+});
+
+test("E2 spoof: a request recorded exactly at CF_FROM that claims an earlier time is bound -- recorder refuses, checker flags its result without cf", async () => {
+  const claim = { at: CF_FROM - HOUR, created_at: CF_FROM - HOUR };
+  const s = recorder();
+  for (const card of [false, true]) {
+    const g = await opened(s.l, `grant-sp-0${card ? 2 : 1}`, "cf.audit.read", CF_FROM, card, claim);
+    await refused(s, g.result(), CF_FROM + MIN, "a Cloudflare-master result must carry cf", `a request claiming an earlier time exempted its ${card ? "card" : "ordinary"} result`);
+  }
   const w = await world();
-  const ap = await w.tap("grant-ap-01", "cf.dns.list", CF_FROM, { cf: LISTS }, { approval: { cf: LISTS } });
-  const nm = await w.tap("grant-nm-01", "test.echo", CF_FROM, { cf: LISTS });
-  await w.tap("grant-lg-01", "cf.token.headcount.setup", CF_FROM - 1);
-  await w.tap("grant-lg-02", "cf.zone.read", CF_FROM - HOUR, {}, { card: true });
-  await w.tap("grant-at-01", "cf.token.accept", CF_FROM, { cf: { made: [], deleted: [] } });
+  const o = await w.tap("grant-sp-01", "cf.audit.read", CF_FROM, {}, { request: claim });
+  const c = await w.tap("grant-sp-02", "cf.audit.read", CF_FROM, {}, { request: claim, card: true });
   await w.run(CF_FROM + HOUR);
-  assert.deepEqual(w.cfIds().sort(), [`cf-bad:grant-ap-01:${ap.n - 1}`, `cf-bad:grant-nm-01:${nm.n}`].sort(), "cf findings differ from the approval and non-master results");
-  const only = (await world());
-  await only.tap("grant-lg-01", "cf.token.headcount.setup", CF_FROM - 1);
-  await only.tap("grant-lg-02", "cf.zone.read", CF_FROM - HOUR, {}, { card: true });
-  await only.rebuild(CF_FROM + 2 * HOUR);
-  assert.deepEqual(only.cfIds(), [], "a rebuild over legacy results without cf raised a finding");
+  assert.deepEqual(w.cfIds().sort(), [`cf-bad:grant-sp-01:${o.n}`, `cf-bad:grant-sp-02:${c.n}`].sort(), "the checker exempted a request that claimed an earlier time");
+});
+
+test("checker: legacy grants (card and ordinary, every master job) without cf raise nothing, and a rebuild over them runs green with no incident", async () => {
+  const w = await world();
+  let n = 0;
+  for (const [job, card] of [...CF_JOBS.map((j) => [j, false] as const), ...CARD_JOBS.map((j) => [j, true] as const)]) {
+    await w.tap(`grant-lg-${String(++n).padStart(2, "0")}`, job, n % 2 ? CF_FROM - 1 : CF_FROM - HOUR, {}, { card });
+  }
+  const first = await w.run(CF_FROM + HOUR);
+  assert.equal(first.records, "ran", `the first read did not run: ${first.reason}`);
+  assert.deepEqual(w.allIds(), [], "legacy results without cf raised an incident");
+  const again = await w.rebuild(CF_FROM + 2 * HOUR);
+  assert.equal(again.records, "ran", `the rebuild did not run: ${again.reason}`);
+  assert.equal(again.checked, 3 * n, "the rebuild did not re-read every record");
+  assert.deepEqual(w.allIds(), [], "a rebuild over legacy results without cf raised an incident");
 });
 
 test("R7 rollback: rule on, rule reverted while an old desk writes no cf, then on again with a fresh CF_FROM -- earlier bodies unchanged, rollback-period results never refused or flagged", async () => {

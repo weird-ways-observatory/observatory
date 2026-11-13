@@ -2323,7 +2323,7 @@
       "why": "card 139071ea R6: checker skips cf",
       "test": {
         "file": "test/cfkeys.test.ts",
-        "name": "checker: every master job, card and ordinary tap, at CF_FROM: a missing or malformed cf is flagged in the shared step; lists and unknown are not"
+        "name": "checker: every master job, card and ordinary tap, at CF_FROM: a missing or malformed cf is flagged in the shared step; lists, 0, 16 and unknown are not"
       },
       "expect": "the checker's cf findings are not exactly"
     },
@@ -2336,9 +2336,22 @@
       "why": "card 139071ea R6: checker times the rule by the record, not its request",
       "test": {
         "file": "test/cfkeys.test.ts",
-        "name": "checker: cf on an approval, or on a non-master result, is flagged; a legacy grant without cf is not, and a rebuild over legacy results stays green"
+        "name": "checker: legacy grants (card and ordinary, every master job) without cf raise nothing, and a rebuild over them runs green with no incident"
       },
-      "expect": "cf findings differ from the approval and non-master results"
+      "expect": "legacy results without cf raised an incident"
+    },
+    {
+      "id": "cf-checker-results-only",
+      "row": "139071ea#E2",
+      "file": "src/records.ts",
+      "find": "              const noCf = f ? undefined : cfRefusal(r.record!, open[grant].at, cfFrom);",
+      "replace": "              const noCf = f || stage !== \"result\" ? undefined : cfRefusal(r.record!, open[grant].at, cfFrom);",
+      "why": "card 139071ea R6: checker skips cf on requests, approvals and verdicts (Codex obs r1 #2)",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "checker: cf on a request, approval or verdict, or on a non-master result, is flagged, before or after CF_FROM"
+      },
+      "expect": "cf findings differ from the request, approval, verdict and non-master records"
     }
   ],
   "retired": []
