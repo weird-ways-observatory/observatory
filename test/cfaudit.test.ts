@@ -704,8 +704,8 @@ test("live-1: refs come from the id's unique end, so two events a second apart n
   ]);
   await run(T0 + H);
   const msg = cf.alerts.map((a) => a.message).join("\n");
-  assert.match(msg, /ref 0000k001/, "M:live-1 key ref from the id's end");
-  assert.match(msg, /ref 0000e002/, "M:live-1 echo ref from the id's end");
+  assert.match(msg, /ref 00000000k001/, "M:live-1 key ref from the id's end");
+  assert.match(msg, /ref 00000000e002/, "M:live-1 echo ref from the id's end");
   assert.doesNotMatch(msg, /ref 0190aaaa/, "M:live-1 no shared time prefix as a ref");
 });
 
@@ -714,4 +714,32 @@ test("live-2: a dashboard key change reads in plain words, with no absent field 
   await run(T0 + H);
   assert.match(cf.alerts[0].message, /no approved request on record: API key create in the dashboard at /, "M:live-2 plain words");
   assert.doesNotMatch(cf.alerts[0].message, /\/missing|by dash/, "M:live-2 no raw field names");
+});
+
+test("live-3 (Codex live-words r1 #1): ids that share their last 8 characters still get different refs", async () => {
+  const a = "0190aaaa-0001-7000-8000-aaaa00001234", b = "0190aaaa-0001-7001-8000-bbbb00001234";
+  const { b: bk, run } = setup([ev(a, T0, { token: OTHER }), ev(b, T0 + 1, { token: OTHER })]);
+  await run(T0 + H);
+  const msg = state(bk).incidents.map((i: any) => i.text).join("\n");
+  assert.match(msg, /ref aaaa00001234/, "M:live-3 first");
+  assert.match(msg, /ref bbbb00001234/, "M:live-3 second");
+});
+
+test("live-4 (Codex live-words r1 #2): an unknown sign-in named like a built-in property reads as itself", async () => {
+  const { cf, run } = setup([ev("c1", T0, { ctx: "constructor", atype: "user", actor: BEN })]);
+  await run(T0 + H);
+  assert.match(cf.alerts[0].message, /create by constructor at /, "M:live-4 own words only");
+  assert.doesNotMatch(cf.alerts[0].message, /function|native code/, "M:live-4 no inherited text");
+});
+
+test("live-5 (Codex live-words r1 #3): a user key and a change naming nothing read plainly", async () => {
+  const { b, run } = setup([
+    ev("u1", T0, { ctx: "dash", atype: "user", actor: BEN, product: "", rtype: "tokens", type: "delete" }),
+    ev("n1", T0 + 1, { token: OTHER, product: "" }),
+  ]);
+  await run(T0 + H);
+  const msg = state(b).incidents.map((i: any) => i.text).join("\n");
+  assert.match(msg, /user API key delete in the dashboard at /, "M:live-5 user key");
+  assert.match(msg, /unnamed resource create by an API key at /, "M:live-5 unnamed");
+  assert.doesNotMatch(msg, /none\//, "M:live-5 no placeholder");
 });

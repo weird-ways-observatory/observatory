@@ -57,11 +57,14 @@ interface State {
 }
 
 const iso = (t: number) => new Date(t).toISOString();
-/** The id's last 8 characters: Cloudflare ids are time-ordered, so their start is shared by events a minute apart. */
-const ref = (id: string) => id.replace(/[^A-Za-z0-9]/g, "").slice(-8) || "none";
+/**
+ * The id's last 12 characters. Cloudflare ids are UUIDv7: the start is a timestamp shared by events a minute apart,
+ * the last 12 are random. A ref is looked up with the time on the same line (Codex live-words r1 #1).
+ */
+const ref = (id: string) => id.replace(/[^A-Za-z0-9]/g, "").slice(-12) || "none";
 /** How a change was made, in plain words. */
 const VIA: Record<string, string> = { dash: "in the dashboard", api: "through the API", api_token: "by an API key", api_key: "by a Global API Key" };
-const via = (how: string) => VIA[how] ?? `by ${how}`;
+const via = (how: string) => (Object.hasOwn(VIA, how) ? VIA[how] : `by ${how}`); // own keys only (Codex live-words r1 #2)
 /** An echo with no key event to explain it: the riskier kind, so it gets its own line before paired ones (Ben, a4ef945a A, 2026-11-13). */
 const lonely = (i: Incident) => i.id.startsWith("echo:") && i.text.includes("logged only as an echo");
 const KIND: Record<string, [string, string]> = {

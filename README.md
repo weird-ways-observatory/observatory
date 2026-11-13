@@ -74,7 +74,7 @@ Counted, never pushed: system DNS and certificate work, Ben's dashboard writes o
 
 Steps marked FROM MEMORY name Cloudflare dashboard places not checked against the live dashboard.
 
-1. Read the alert: it names the kind of change, how it was signed in, the time, and a ref (the last 8 characters of Cloudflare's event id; its start is a timestamp shared by nearby events). It never repeats anything the writer chose.
+1. Read the alert: it names the kind of change, how it was signed in, the time, and a ref (the last 12 characters of Cloudflare's event id; its start is a timestamp shared by nearby events, so look it up with the time on the same line). It never repeats anything the writer chose.
 2. Ask an agent to look up the ref in the audit log (agents hold a read-only key). Or, in the main account: Manage account, Audit log (FROM MEMORY), and search around the time.
 3. A change Ben made himself in the dashboard (a key he created, a member he added) is expected to alert: nothing to do but recognise it.
 4. A change by a key nobody recognises: delete or roll that key on the main account's API tokens page (FROM MEMORY), then ask an agent for a root-cause card.
