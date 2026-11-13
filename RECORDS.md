@@ -185,6 +185,20 @@ Rules live in `src/card.ts`, used by the recorder and the checker alike.
   repository id as a string of digits (no leading zero, at most 20); no other result may carry
   `repo_id` (409; `card_refused` on a card grant). It is the durable evidence the nightly check and the
   "repos made by cards" measure match a new repo by. Rule: `repoIdRefusal()` in `src/card.ts`.
+- **Cloudflare keys (card 139071ea), every grant, card or ordinary tap:** a result of a job that opens the
+  Cloudflare master (`CF_JOBS`: `cf.zone.read`, `cf.dns.list`, `cf.audit.read`, `cf.token.headcount.setup`,
+  `cf.token.accept`) carries `cf`: `"unknown"`, or exactly `{made, deleted}`, each a list of at most 16
+  key ids (32 lower-case hex). The front desk signs the keys the tap made and the deletes Cloudflare
+  confirmed, or `"unknown"` when the vault cannot vouch for every change, so the hourly Cloudflare audit
+  check can tie each master-key event to Ben's tap. No other record carries `cf`: not a request, approval
+  or verdict, nor any other job's result. The rule binds grants whose request was recorded at or after
+  `CF_FROM`, judged by the recorder's own stored time (the checker: the request's signed `recorded_at`),
+  never a time the writer sends; earlier grants may leave `cf` out, so their frozen bodies resend as
+  they are. The recorder refuses a breach (409; `card_refused` on a card grant); the hourly checker
+  raises `cf-bad` on any stored record that breaks it. Rule: `cfRefusal()` in `src/card.ts`.
+  **Rollback order:** revert this rule first, then the front desk; with the rule standing, a desk without
+  `cf` gets every new Cloudflare result refused. Turning it back on takes a fresh `CF_FROM`, set after the
+  `cf`-writing desk is live again; the old value would flag results the rolled-back desk wrote.
 - **Hourly checker:** re-runs these checks on stored card approvals, timed by their signed
   `recorded_at`, and checks the challenge carries the card hash (`card-bad`); a card approval with no
   result recorded by deadline + 1 hour, raised only once a complete read has passed that time
