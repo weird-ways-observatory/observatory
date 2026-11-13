@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import worker, { NIGHT_CRON } from "../src/index.ts";
 import { FRESH_CRON } from "../src/fresh.ts";
+import { CFAUDIT_CRON } from "../src/cfaudit.ts";
 
 // wrangler.jsonc keeps its comments on their own lines, so dropping those lines leaves JSON.
 const config = JSON.parse(
@@ -33,13 +34,13 @@ test("only the reviewed keys: no vars, no build step, nothing beyond phase 2c", 
   ]);
 });
 
-test("it reaches only its own two buckets: once a night for backups, hourly for freshness and records", () => {
+test("it reaches only its own two buckets: once a night for backups, hourly for freshness and records, hourly at :45 for Cloudflare", () => {
   assert.deepEqual(config.r2_buckets, [
     { binding: "COPY", bucket_name: "observatory-backups" },
     { binding: "RECORDS", bucket_name: "observatory-records" },
   ]);
-  assert.deepEqual(config.triggers, { crons: [NIGHT_CRON, FRESH_CRON] });
-  assert.deepEqual([NIGHT_CRON, FRESH_CRON], ["15 3 * * *", "30 * * * *"]);
+  assert.deepEqual(config.triggers, { crons: [NIGHT_CRON, FRESH_CRON, CFAUDIT_CRON] });
+  assert.deepEqual([NIGHT_CRON, FRESH_CRON, CFAUDIT_CRON], ["15 3 * * *", "30 * * * *", "45 * * * *"]);
 });
 
 test("anything that does reach it gets 404", async () => {
