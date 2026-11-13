@@ -216,16 +216,22 @@ test("checker: every master job, card and ordinary tap, at CF_FROM: a missing or
 
 test("checker: cf on a request, approval or verdict, or on a non-master result, is flagged, before or after CF_FROM", async () => {
   const w = await world(), want: string[] = [];
+  const combos = [...CF_JOBS.map((j) => [j, false] as const), ...CARD_JOBS.map((j) => [j, true] as const)];
   for (const [t, k] of [[CF_FROM - HOUR, "a"], [CF_FROM + HOUR, "b"]] as const) {
-    const rq = await w.tap(`grant-rq-0${k}`, "cf.dns.list", t, { cf: LISTS }, { request: { cf: LISTS } });
-    want.push(`cf-bad:grant-rq-0${k}:${rq.n - 2}`);
-    const ap = await w.tap(`grant-ap-0${k}`, "cf.dns.list", t, { cf: LISTS }, { approval: { cf: LISTS } });
-    want.push(`cf-bad:grant-ap-0${k}:${ap.n - 1}`);
-    const vd = await w.tap(`grant-vd-0${k}`, "cf.zone.read", t, { cf: LISTS }, { verdict: { cf: LISTS } });
-    want.push(`cf-bad:grant-vd-0${k}:${vd.n - 1}`);
-    for (const job of ["test.echo", "gh.repo.create"]) {
-      const g = `grant-nm-${job === "test.echo" ? "e" : "r"}${k}`;
-      want.push(`cf-bad:${g}:${(await w.tap(g, job, t, { cf: LISTS, ...(job === "gh.repo.create" ? { repo_id: "12345" } : {}) }, { card: true })).n}`);
+    let n = 0;
+    // Every supported master job, ordinary and (where eligible) card, with cf on each non-result stage in turn (Codex obs r2 #2).
+    for (const [job, card] of combos) {
+      const c = `${k}${String(++n).padStart(2, "0")}`;
+      const rq = await w.tap(`grant-rq-${c}`, job, t, { cf: LISTS }, { card, request: { cf: LISTS } });
+      want.push(`cf-bad:grant-rq-${c}:${rq.n - 2}`);
+      const ap = await w.tap(`grant-ap-${c}`, job, t, { cf: LISTS }, { card, approval: { cf: LISTS } });
+      want.push(`cf-bad:grant-ap-${c}:${ap.n - 1}`);
+      const vd = await w.tap(`grant-vd-${c}`, job, t, { cf: LISTS }, { card, verdict: { cf: LISTS } });
+      want.push(`cf-bad:grant-vd-${c}:${vd.n - 1}`);
+    }
+    for (const [job, card] of [["test.echo", false], ["test.echo", true], ["gh.repo.create", true]] as const) {
+      const g = `grant-nm-${job === "test.echo" ? "e" : "r"}${card ? "c" : "o"}${k}`;
+      want.push(`cf-bad:${g}:${(await w.tap(g, job, t, { cf: LISTS, ...(job === "gh.repo.create" ? { repo_id: "12345" } : {}) }, { card })).n}`);
     }
   }
   await w.run(CF_FROM + 2 * HOUR);
