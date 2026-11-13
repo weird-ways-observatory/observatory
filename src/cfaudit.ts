@@ -4,12 +4,14 @@
 // stolen key, a Global API Key, a dashboard key or member change (even Ben's), any kind never seen,
 // any `api` key echo -- becomes an incident, and Ben's phone gets one alert per run.
 // Design: studio-os docs/specifications/trust-but-verify/REFINE-beec640b-outside-record.md v2.6;
-// threats: THREATS-beec640b.md. Build b (matching master-key writes to signed results) is not here:
-// master-key key writes are counted "not yet matched" until then.
+// threats: THREATS-beec640b.md. Build b matches master-key writes to signed tap results in src/cfmatch.ts;
+// its working state is `m` in this state object, saved with the bookmark (REFINE-beec640b-build-b.md v3.3).
 // The light means "the checker ran and read everything it should", never "Cloudflare is fine".
-// It only reads Cloudflare and writes only state/cfaudit.json (COPY bucket, unlocked state/).
+// It only reads Cloudflare and writes state/cfaudit.json plus build b's append-only state/cfepochs.json and
+// state/cfindex/ (COPY bucket, unlocked state/).
 import { alert, redact, type AlertEnv } from "./alert.ts";
 import { judge, type Action, type Judged } from "./cfjudge.ts";
+import { matcher, MASTER_GROUP } from "./cfmatch.ts";
 
 export const CFAUDIT_CRON = "45 * * * *";
 export const STATE_KEY = "state/cfaudit.json";
@@ -59,7 +61,7 @@ interface State {
 const iso = (t: number) => new Date(t).toISOString();
 /** The whole event id (Codex live-words r2: any shortened form can collide). Cloudflare ids are UUIDs; anything
  * else is cut to letters, digits and dashes, at most 40, so a malformed id cannot flood the alert. */
-const ref = (id: string) => id.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40) || "none";
+export const ref = (id: string) => id.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40) || "none";
 /** How a change was made, in plain words. */
 const VIA: Record<string, string> = { dash: "in the dashboard", api: "through the API", api_token: "by an API key", api_key: "by a Global API Key" };
 const via = (how: string) => (Object.hasOwn(VIA, how) ? VIA[how] : `by ${how}`); // own keys only (Codex live-words r1 #2)
@@ -196,6 +198,8 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   const add = (id: string, text: string, told = false) => { if (!incidents.has(id)) incidents.set(id, { id, text, at: T, told }); };
   if (loaded.rebuilt) add(`rebuilt:${T}`, `the Cloudflare check's saved state was unreadable and was rebuilt from ${iso(start).slice(0, 10)}: changes found while it catches up are on the list, sent only as this line`);
   const reds: string[] = [];
+  // Build b: the matcher reads effects and epochs, and re-reads what build a judged without it (13.2).
+  const mx = await matcher(env.COPY, who, s, T, (id, text) => add(id, text), (re) => [...incidents.keys()].some((k) => re.test(k)));
   /**
    * Writes the incident map into the state, worst first, at most MAX_INCIDENTS with one counted overflow line.
    * Run before every save, so a save never holds a bookmark without the incidents read up to it. Idempotent:
@@ -205,6 +209,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
    * an untold one is never pushed out by a told one; still over, the newest untold ones are counted, not kept.
    */
   const settle = () => {
+    mx.sync(); // the matching checkpoint moves with the bookmark it is saved with
     const prevMore = incidents.get("more");
     incidents.delete("more");
     let list = [...incidents.values()].sort((a, b) => rank(a) - rank(b) || a.at - b.at);
@@ -260,6 +265,8 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   if (keyId && replace) s.witness = { key: keyId, t: T };
   report.freshness = freshness;
 
+  if (keyId) { const red = await mx.replay((q) => page(get, q)); if (red) reds.push(red); }
+
   // 3. The backlog, oldest first, from the bookmark (inclusive) to now minus the settle time.
   const before = T - SETTLE_MS;
   let judged = 0, skipped = 0, skipPages = 0, ended = false, readOk = Boolean(keyId);
@@ -267,7 +274,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   const hashed = new Map<string, string>(); // one digest per address per run (CPU: REFINE 5.6)
   const recent = s.recent;
   const q0 = `/logs/audit?since=${iso(s.bm.t)}&before=${iso(before)}&direction=asc&limit=${PAGE}`;
-  let cursor: string | undefined;
+  let cursor: string | undefined, held = false;
   while (readOk) {
     if (before <= s.bm.t) { ended = true; break; }
     const p = await page(get, q0 + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
@@ -275,9 +282,11 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     let judgedHere = 0;
     for (const { id, t, e } of p.events) {
       if (t < s.bm.t || (t === s.bm.t && s.bm.ids.includes(id))) { skipped++; continue; }
-      judgedHere++;
       const j = judge(e, who);
-      await record(j, id, t);
+      if (mx.isMaster(j) && mx.full(t)) { held = true; break; } // never dropped: the bookmark waits (4.4)
+      judgedHere++;
+      mx.saw(e, t);
+      await record(j, id, t, e);
       if (t > s.bm.t) s.bm = { t, ids: [id] };
       else s.bm.ids.push(id);
     }
@@ -292,6 +301,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     }
     settle(); // Codex r1 #1: the page's incidents are saved with its bookmark, never after it
     if (!(await saver.save(s))) return stop(); // per page: a run cut short loses at most this page
+    if (held) { reds.push(`over 500 master writes are waiting to be matched: the check holds its place`); break; }
     if (!cursor) { ended = true; break; }
     if (judgedHere) break; // one judging page a run
     if (++skipPages > SKIP_PAGES) {
@@ -301,11 +311,12 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     }
   }
 
-  async function record(j: Judged, id: string, t: number) {
+  async function record(j: Judged, id: string, t: number, e: Record<string, unknown>) {
     const v = j.verdict;
     if (v.v === "read") return;
     const at = v.v === "counted" ? "" : iso(t); // built only for incident text
-    if (v.v === "counted") counts[v.group] = (counts[v.group] ?? 0) + 1;
+    const group = v.v !== "counted" ? undefined : v.group === MASTER_GROUP ? mx.take(e, id, t) : v.group;
+    if (group) counts[group] = (counts[group] ?? 0) + 1;
     else if (v.v === "unreadable") add(`change:${id}`, `Cloudflare logged an unreadable change at ${at}, ref ${ref(id)}`, s.rebuiltAt !== undefined && t < s.rebuiltAt);
     else if (v.v === "alert") add(`change:${id}`, `Cloudflare ${j.attempted ? "change attempted (it failed)" : "changed"} with no approved request on record: ${j.label} ${via(j.how)} at ${at}, ref ${ref(id)} (${v.why})`, s.rebuiltAt !== undefined && t < s.rebuiltAt);
     if (j.pair && j.pair.ip !== undefined) {
@@ -330,6 +341,8 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     else if (!r.p) add(`noecho:${r.id}`, `a key ${r.a} at ${iso(r.t)}, ref ${ref(r.id)}, has no echo in the log (diagnostic)`, told);
   });
   s.recent = keep;
+  await mx.finish(through, counts);
+  report.matching = mx.status();
   if (ended && s.rebuiltAt !== undefined) delete s.rebuiltAt;
 
   // 5. Lag against the accepted capacity; ties cleared once the bookmark moves past them.
