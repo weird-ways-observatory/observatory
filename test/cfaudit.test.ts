@@ -612,6 +612,9 @@ test("r1#4: valid JSON with corrupt nested fields is rebuilt, never reloaded", a
     { ...good, bm: { t: START, ids: [5] } },
     { ...good, week: { counts: { system: "x" }, lag: 0 } },
     { ...good, witness: { key: 1, t: 0 } },
+    // Codex r2: a paired echo without its mate's time passed the validator, then threw when it settled.
+    { ...good, recent: [{ id: "e", k: "echo", a: "create", ip: "abc", t: T0 - H, p: "k" }] },
+    { ...good, recent: [{ id: "e", k: "echo", a: "create", ip: "abc", t: T0 - H, pt: T0 - H }] },
   ];
   for (const s of bad) {
     const { b, run } = setup([shapes.systemDns("s", T0), ev("c", T0 + 1000, { token: OTHER })]);

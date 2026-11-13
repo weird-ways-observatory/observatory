@@ -2079,6 +2079,19 @@
         "name": "r1 drift 10 (D1): a first run whose backlog spans runs sends one summary, not a replay"
       },
       "expect": "M:D1 first-run summary"
+    },
+    {
+      "id": "r2-pair-fields-together",
+      "row": "D2",
+      "file": "src/cfaudit.ts",
+      "find": "((r.p === undefined && r.pt === undefined) || (isStr(r.p) && Number.isFinite(r.pt))))",
+      "replace": "(r.p === undefined || isStr(r.p)))",
+      "why": "beec640b build a-2 (Codex r2): a pair's id and time are saved together or not at all",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#4: valid JSON with corrupt nested fields is rebuilt, never reloaded"
+      },
+      "expect": "M:r1#4"
     }
   ],
   "retired": []

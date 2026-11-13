@@ -91,7 +91,7 @@ export function validState(s: unknown): s is State {
   const { bm, witness, recent, incidents, week } = s;
   return isObj(bm) && Number.isFinite(bm.t) && Array.isArray(bm.ids) && bm.ids.every(isStr)
     && (witness === undefined || (isObj(witness) && isStr(witness.key) && Number.isFinite(witness.t)))
-    && Array.isArray(recent) && recent.every((r) => isObj(r) && isStr(r.id) && (r.k === "key" || r.k === "echo") && ACTIONS.has(r.a) && isStr(r.ip) && Number.isFinite(r.t) && (r.p === undefined || isStr(r.p)) && (r.pt === undefined || Number.isFinite(r.pt)))
+    && Array.isArray(recent) && recent.every((r) => isObj(r) && isStr(r.id) && (r.k === "key" || r.k === "echo") && ACTIONS.has(r.a) && isStr(r.ip) && Number.isFinite(r.t) && ((r.p === undefined && r.pt === undefined) || (isStr(r.p) && Number.isFinite(r.pt))))
     && Array.isArray(incidents) && incidents.every((i) => isObj(i) && isStr(i.id) && isStr(i.text) && Number.isFinite(i.at) && typeof i.told === "boolean")
     && Number.isInteger(s.dropped) && s.dropped >= 0
     && isObj(week) && isObj(week.counts) && Object.values(week.counts).every((n) => Number.isInteger(n) && (n as number) >= 0) && Number.isFinite(week.lag)
