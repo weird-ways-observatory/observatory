@@ -192,6 +192,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   const before = T - SETTLE_MS;
   let judged = 0, skipped = 0, skipPages = 0, ended = false, readOk = Boolean(keyId);
   const counts = s.week.counts;
+  const hashed = new Map<string, string>(); // one digest per address per run (CPU: REFINE 5.6)
   const recent = s.recent;
   const q0 = `/logs/audit?since=${iso(s.bm.t)}&before=${iso(before)}&direction=asc&limit=${PAGE}`;
   let cursor: string | undefined;
@@ -221,13 +222,14 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   }
 
   async function record(j: Judged, id: string, t: number) {
-    const v = j.verdict, at = `${iso(t)}`;
+    const v = j.verdict;
     if (v.v === "read") return;
+    const at = v.v === "counted" ? "" : iso(t); // built only for incident text
     if (v.v === "counted") counts[v.group] = (counts[v.group] ?? 0) + 1;
     else if (v.v === "unreadable") add(`change:${id}`, `Cloudflare logged an unreadable change at ${at}, ref ${ref(id)}`, s.rebuiltAt !== undefined && t < s.rebuiltAt);
     else if (v.v === "alert") add(`change:${id}`, `Cloudflare ${j.attempted ? "change attempted (it failed)" : "changed"} with no approved request on record: ${j.label} by ${j.how} at ${at}, ref ${ref(id)} (${v.why})`, s.rebuiltAt !== undefined && t < s.rebuiltAt);
     if (j.pair && j.pair.ip !== undefined) {
-      const ip = await hashIp(j.pair.ip), want = j.pair.k === "key" ? "echo" : "key";
+      const ip = hashed.get(j.pair.ip) ?? hashed.set(j.pair.ip, await hashIp(j.pair.ip)).get(j.pair.ip)!, want = j.pair.k === "key" ? "echo" : "key";
       const r: Recent = { id, k: j.pair.k, a: j.pair.a, ip, t };
       const mate = recent.filter((x) => x.k === want && !x.p && x.a === r.a && x.ip === ip && Math.abs(x.t - t) <= PAIR_MS).sort((x, y) => Math.abs(x.t - t) - Math.abs(y.t - t))[0];
       if (mate) (mate.p = id), (mate.pt = t), (r.p = mate.id), (r.pt = mate.t);

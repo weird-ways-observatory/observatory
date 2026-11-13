@@ -1928,8 +1928,8 @@
       "id": "A10-ip-hashed",
       "row": "A10",
       "file": "src/cfaudit.ts",
-      "find": "const ip = await hashIp(j.pair.ip),",
-      "replace": "const ip = j.pair.ip,",
+      "find": "hashed.set(j.pair.ip, await hashIp(j.pair.ip))",
+      "replace": "hashed.set(j.pair.ip, j.pair.ip)",
       "why": "beec640b build a: addresses are kept only as hashes",
       "test": {
         "file": "test/cfaudit.test.ts",

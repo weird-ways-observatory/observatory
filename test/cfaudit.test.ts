@@ -544,3 +544,18 @@ test("the account id, token and ids reach Cloudflare only in the request; the re
   for (const s of [ACCOUNT, "audit-token-value"]) assert.ok(!logs.join("\n").includes(s) && !cf.pings.map((p) => p.body).join().includes(s), s);
   void AUDIT;
 });
+
+test("D10 screening (c-box, not capacity evidence): a worst-case run -- a full page of mixed kinds, a full list, waiting pairs, every save", async () => {
+  const kinds = [(id: string, t: number) => ev(id, t, { token: OTHER }), shapes.systemDns, shapes.benDash, (id: string, t: number) => shapes.masterCreate(id, t, "192.0.2.9"), (id: string, t: number) => shapes.echo(id, t, "TOKEN_CREATE", "192.0.2.9")];
+  const old = Array.from({ length: 199 }, (_, n) => ev(`o${n}`, T0 + n, { token: OTHER }));
+  const page = Array.from({ length: PAGE }, (_, n) => kinds[n % kinds.length](`w${n}`, T0 + H + n * 50));
+  const { b, cf, run } = setup([...old, ...page]);
+  await run(T0 + H); // fills the list to its bound
+  const t = performance.now();
+  const r = await run(T0 + 3 * H);
+  const ms = performance.now() - t;
+  console.log(JSON.stringify({ screening_ms: Math.round(ms * 10) / 10, judged: r.judged, puts: b.puts, open: r.open }));
+  assert.equal(r.cfaudit, "ran");
+  assert.ok(ms < 1000, `screening run took ${ms} ms on the c-box`);
+  void cf;
+});
