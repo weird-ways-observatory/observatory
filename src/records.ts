@@ -608,9 +608,9 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   } catch {
     fxErr ??= "the effects list could not replay held-back records";
   }
-  if (fxErr) (verdict = "unverified"), (reason = `${fxErr}; matching stays incomplete until it is fixed`);
+  if (fxErr) (verdict = "unverified"), (reason = `${fxErr}; matching stays incomplete until it is fixed${reason ? `; ${reason}` : ""}`);
   // Coverage clock (4.2): only a run that read to the end, under the hourly page, moves it; never backwards.
-  if (verdict === "ran" && checked < PAGE && ended && tailClear) fx.covered_to = Math.max(fx.covered_to, now.getTime() - SKEW_MS - WRITE_MARGIN_MS);
+  if (verdict === "ran" && ended && tailClear && checked < PAGE) fx.covered_to = Math.max(fx.covered_to, now.getTime() - SKEW_MS - WRITE_MARGIN_MS);
   const ping = env.PING_URL_RECORDS;
 
   // Until Ben creates this job's check, it only logs (like fresh.ts): no alert, no light.

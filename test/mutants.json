@@ -2352,6 +2352,383 @@
         "name": "checker: cf on a request, approval or verdict, or on a non-master result, is flagged, before or after CF_FROM"
       },
       "expect": "cf findings differ from the request, approval, verdict and non-master records"
+    },
+    {
+      "id": "cfmatch-taint-on-finding",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (bad || e.tainted) return (e.tainted ??= bad), true;",
+      "replace": "if (e.tainted) return true;",
+      "why": "beec640b build b (records effects): a record with a finding still makes its stage eligible",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a finding at any stage taints the grant and stops its later stages; a bad request gets no entry"
+      },
+      "expect": "a stage after a bad approval was kept"
+    },
+    {
+      "id": "cfmatch-own-findings",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "findings.length > mark ? kind(findings[mark].id) : undefined",
+      "replace": "undefined",
+      "why": "beec640b build b (records effects): the record's own findings are not passed to eligibility",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a finding at any stage taints the grant and stops its later stages; a bad request gets no entry"
+      },
+      "expect": "a request with a finding made an entry"
+    },
+    {
+      "id": "cfmatch-dup-id",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "new Set(l).size !== l.length",
+      "replace": "l.length < 0",
+      "why": "beec640b build b (records effects): a repeated key id in cf no longer taints",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a cf list with a repeated key id taints the grant"
+      },
+      "expect": "a repeated key id in a cf list did not taint"
+    },
+    {
+      "id": "cfmatch-cf-jobs-only",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "!job || !CF_JOBS.includes(job)",
+      "replace": "!job",
+      "why": "beec640b build b (records effects): non-CF jobs get entries",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: an honest tap per Cloudflare-master job and path is kept whole; other jobs get no entry"
+      },
+      "expect": "the effects entries are not exactly the honest master taps"
+    },
+    {
+      "id": "cfmatch-card-path",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "e.path = rec.approval_kind === \"card/v1\" ? \"card\" : \"ordinary\";",
+      "replace": "e.path = \"ordinary\";",
+      "why": "beec640b build b (records effects): card path never recorded",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: an honest tap per Cloudflare-master job and path is kept whole; other jobs get no entry"
+      },
+      "expect": "the effects entries are not exactly the honest master taps"
+    },
+    {
+      "id": "cfmatch-cf-none",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "{ made: [...lists.made], deleted: [...lists.deleted] } : \"none\";",
+      "replace": "{ made: [...lists.made], deleted: [...lists.deleted] } : \"unknown\";",
+      "why": "beec640b build b (records effects): legacy cf recorded as unknown",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: legacy results without cf are kept as none; cf unknown is kept as unknown"
+      },
+      "expect": "legacy or unknown cf was not kept as none or unknown"
+    },
+    {
+      "id": "cfmatch-later-taint",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (h.live) fx.grants[h.live].tainted ??= kind(f.id);",
+      "replace": "if (h.live) void kind(f.id);",
+      "why": "beec640b build b (records effects): later findings never taint",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a later daily-count finding on a kept record number taints its grant"
+      },
+      "expect": "a later sweep finding on the result's number did not taint the grant"
+    },
+    {
+      "id": "cfmatch-later-taint-by-number",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "n !== undefined && Object.hasOwn(fx.index, n) ? fx.index[n] : undefined",
+      "replace": "undefined",
+      "why": "beec640b build b (records effects): a finding naming only a record number never taints",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a later daily-count finding on a kept record number taints its grant"
+      },
+      "expect": "a later sweep finding on the result's number did not taint the grant"
+    },
+    {
+      "id": "cfmatch-retire-72h",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "> EFFECTS_KEEP_MS && done.has(g)",
+      "replace": ">= 0 && done.has(g)",
+      "why": "beec640b build b (records effects): retirement ignores the 72 h hold",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retention: an entry is retired only after res.at + 72 h AND cfaudit's m.done names it; its index lasts 30 days more"
+      },
+      "expect": "an entry was retired before 72 h"
+    },
+    {
+      "id": "cfmatch-retire-done",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "> EFFECTS_KEEP_MS && done.has(g)",
+      "replace": "> EFFECTS_KEEP_MS",
+      "why": "beec640b build b (records effects): retirement ignores cfaudit's m.done",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retention: an entry is retired only after res.at + 72 h AND cfaudit's m.done names it; its index lasts 30 days more"
+      },
+      "expect": "an entry was retired without cfaudit's acknowledgement"
+    },
+    {
+      "id": "cfmatch-index-keep",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "<= INDEX_KEEP_MS)) delete fx.index[n];",
+      "replace": "<= 0)) delete fx.index[n];",
+      "why": "beec640b build b (records effects): the index is dropped at retirement",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retention: an entry is retired only after res.at + 72 h AND cfaudit's m.done names it; its index lasts 30 days more"
+      },
+      "expect": "the index was dropped before 30 days"
+    },
+    {
+      "id": "cfmatch-covered-unverified",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (verdict === \"ran\" && ended && tailClear && checked < PAGE) fx.covered_to",
+      "replace": "if (ended && tailClear && checked < PAGE) fx.covered_to",
+      "why": "beec640b build b (records effects): an unverified run moves covered_to",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "an unverified daily-count run moved covered_to"
+    },
+    {
+      "id": "cfmatch-covered-tail",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (verdict === \"ran\" && ended && tailClear && checked < PAGE) fx.covered_to",
+      "replace": "if (verdict === \"ran\" && ended && checked < PAGE) fx.covered_to",
+      "why": "beec640b build b (records effects): a run that did not prove the tail moves covered_to",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "a run that saw a higher number moved covered_to"
+    },
+    {
+      "id": "cfmatch-covered-monotonic",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.covered_to = Math.max(fx.covered_to, now.getTime() - SKEW_MS - WRITE_MARGIN_MS);",
+      "replace": "fx.covered_to = now.getTime() - SKEW_MS - WRITE_MARGIN_MS;",
+      "why": "beec640b build b (records effects): covered_to moves backwards",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "covered_to moved backwards"
+    },
+    {
+      "id": "cfmatch-covered-margin",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "now.getTime() - SKEW_MS - WRITE_MARGIN_MS);",
+      "replace": "now.getTime() - SKEW_MS);",
+      "why": "beec640b build b (records effects): covered_to drops the write margin",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "a run that read to the end did not set covered_to"
+    },
+    {
+      "id": "cfmatch-gen",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "effects: { ...fx, gen: fx.gen + 1 }",
+      "replace": "effects: { ...fx, gen: fx.gen }",
+      "why": "beec640b build b (records effects): gen does not count saves",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "save: gen counts saves; a throw or a null at the save leaves effects and bookmark unchanged, and the next run rebuilds the same"
+      },
+      "expect": "gen is not 1 after the first save"
+    },
+    {
+      "id": "cfmatch-save-etag",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "const onlyIf = etag ? { etagMatches: etag } : new Headers({ \"If-None-Match\": \"*\" });",
+      "replace": "const onlyIf = etag ? undefined : new Headers({ \"If-None-Match\": \"*\" });",
+      "why": "beec640b build b (records effects): the save is not conditional on the etag read",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "save: two runs racing -- the loser writes nothing and the winner's state stands"
+      },
+      "expect": "the losing run reported ran"
+    },
+    {
+      "id": "cfmatch-save-create",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "const onlyIf = etag ? { etagMatches: etag } : new Headers({ \"If-None-Match\": \"*\" });",
+      "replace": "const onlyIf = etag ? { etagMatches: etag } : undefined;",
+      "why": "beec640b build b (records effects): the first save is not create-if-absent",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "save: the first save creates state only if none exists"
+      },
+      "expect": "a run that saw no state overwrote existing state"
+    },
+    {
+      "id": "cfmatch-defer-while-replaying",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.replay_from === undefined && !project(",
+      "replace": "!project(",
+      "why": "beec640b build b (records effects): live projection runs ahead of a pending replay",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: at MAX_EFFECTS live entries replay_from marks the first record not kept, the bookmark advances, and nothing is lost when room returns"
+      },
+      "expect": "replay_from does not name the first record not kept"
+    },
+    {
+      "id": "cfmatch-replay-stops",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "own && kind(own))) break;",
+      "replace": "own && kind(own))) { /* no stop */ }",
+      "why": "beec640b build b (records effects): replay skips records with no room",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: at MAX_EFFECTS live entries replay_from marks the first record not kept, the bookmark advances, and nothing is lost when room returns"
+      },
+      "expect": "replay_from does not name the first record not kept"
+    },
+    {
+      "id": "cfmatch-replay-grant-taint",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.grants[m.grant].tainted ??= kind(onGrant);",
+      "replace": "void kind(onGrant);",
+      "why": "beec640b build b (records effects): replay ignores grant-level incidents",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: a replayed record with a standing finding is tainted, as if read live"
+      },
+      "expect": "a replayed grant with a standing finding on the grant was not tainted"
+    },
+    {
+      "id": "cfmatch-replay-own",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "const own = r.finding ? \"bad\" : droppedFull ? \"incidents overflow\" : ids.find(at)",
+      "replace": "const own = r.finding ? \"bad\" : undefined",
+      "why": "beec640b build b (records effects): replay ignores record-level incidents",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: a replayed record with a standing finding is tainted, as if read live"
+      },
+      "expect": "a replayed record with a standing finding on its number was not tainted"
+    },
+    {
+      "id": "cfmatch-hit-live-only",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (byN !== undefined && Object.hasOwn(fx.grants, byN)) return { live: byN };",
+      "replace": "if (byN !== undefined) return { live: byN };",
+      "why": "beec640b build b (records effects guard): a retired grant found through the index is treated as live",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retired: a finding on a retired grant's record raises one incident and is kept for re-judging; the run does not throw"
+      },
+      "expect": "a finding on a retired record broke the run"
+    },
+    {
+      "id": "cfmatch-retired-incident",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": ", findings.push({ id: `retired-bad:",
+      "replace": ", void ({ id: `retired-bad:",
+      "why": "beec640b build b (records effects guard): a finding on a retired record raises no incident",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retired: a finding on a retired grant's record raises one incident and is kept for re-judging; the run does not throw"
+      },
+      "expect": "no retired-record incident was raised"
+    },
+    {
+      "id": "cfmatch-retired-revoked",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "(fx.revoked[h.retired.n] = h.retired.grant), ",
+      "replace": "",
+      "why": "beec640b build b (records effects guard): a finding on a retired record is not kept for re-judging",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retired: a finding on a retired grant's record raises one incident and is kept for re-judging; the run does not throw"
+      },
+      "expect": "the retired record was not kept for re-judging"
+    },
+    {
+      "id": "cfmatch-guard-main",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.replay_from ??= next; // projected again later, never skipped",
+      "replace": "throw new Error(\"effects\");",
+      "why": "beec640b build b (records effects guard): a throw projecting a record escapes into the read",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "the unverified reason does not name effects (the main read)"
+    },
+    {
+      "id": "cfmatch-guard-after",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fxErr ??= \"the effects list could not be updated after the read\";",
+      "replace": "throw new Error(\"effects\");",
+      "why": "beec640b build b (records effects guard): a throw after the read escapes the run",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "effects threw out of the run (after the read)"
+    },
+    {
+      "id": "cfmatch-guard-replay",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fxErr ??= \"the effects list could not replay held-back records\";",
+      "replace": "throw new Error(\"effects\");",
+      "why": "beec640b build b (records effects guard): a throw in the replay escapes the run",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "effects threw out of the run (the main read)"
+    },
+    {
+      "id": "cfmatch-guard-verdict",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (fxErr) (verdict = \"unverified\")",
+      "replace": "if (false) (verdict = \"unverified\")",
+      "why": "beec640b build b (records effects guard): an effects failure leaves the run reported as ran",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "did not mark the run unverified"
     }
   ],
   "retired": []
