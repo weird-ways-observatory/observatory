@@ -75,7 +75,12 @@ export function parseState(text: string | undefined, start: number, now: number)
   return { state: { ...fresh(start), rebuiltAt: now }, rebuilt: true };
 }
 
-/** Every save is conditional on the etag the previous one returned (the first: the etag read, or absent). */
+/**
+ * Every save is conditional on the etag the previous one returned (the first: the etag read, or absent).
+ * This guards against conflicting state updates, not "one run at a time" (Codex targeted r3): a staggered
+ * second run may also send, and delivery is at least once. R2's etag is the content's MD5, so a rival
+ * write of byte-identical state passes the condition; it holds the same state, so nothing is lost.
+ */
 export class Saver {
   private bucket: Pick<R2Bucket, "put">;
   private etag: string | null;
