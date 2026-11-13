@@ -61,10 +61,13 @@ At :45 past every hour, `src/cfaudit.ts` reads the main Cloudflare account's aud
 
 Counted, never pushed: system DNS and certificate work, Ben's dashboard writes of known kinds (analytics, R2 rules, Access apps, DNS records), his sign-ins, and the master key's key creates and deletes. Those last are "not yet matched": build b matches each one to the signed front desk result that names it.
 
-- **The light** (`PING_URL_CFAUDIT`) means "the checker ran and read everything it should". It goes red when a setting is missing, the key is refused, a page cannot be read, the check's own earlier read is missing from the log after 40 minutes, or too many events share one instant.
+- **The light** (`PING_URL_CFAUDIT`) means "the checker ran and read everything it should". It goes red when a setting is missing or malformed (the light's own address included: with none, the check does not run), the key is refused, a page cannot be read, the check's own earlier read is missing from the log after 40 minutes, or too many events share one instant.
 - **Freshness:** each run calls `tokens/verify`; Cloudflare logs that read. The next run must find it in the log, so a log that stops recording turns the light red instead of looking quiet.
 - **Reading:** oldest first from a bookmark (the last judged event's time and every id judged at that millisecond), up to 20 minutes before now, one judging page of 200 events a run. A backlog over 3 hours is one incident. 200 an hour is a proposed setting until Cloudflare's own CPU figure for a worst-case run is read.
-- **State** (`state/cfaudit.json` in the copy bucket) is saved after every page and before any alert, each save conditional on the one before, so two runs at once never overwrite each other. Delivery is at least once: a crash after sending can send again.
+- **State** (`state/cfaudit.json` in the copy bucket) is saved after every page, together with that page's incidents, and before any alert, each save conditional on the one before, so two runs at once never overwrite each other. Delivery is at least once: a crash after sending can send again. State that is unreadable or the wrong shape is rebuilt, with one summary line.
+- **One push a run:** every new incident is in it, by its own line or counted in one closing line ("and N more: ...; ask an agent to read the list"), so nothing waits for a later hour. The list keeps at most 200 lines, the last one counting what could not be kept.
+- **First run:** if the backlog since the start date does not fit in one run, Ben gets one "the Cloudflare check started" line instead of a replay; the backlog's changes are on the list.
+- **Weekly line:** the first run after Monday 14:00 UTC sends the week's counted writes, only whole; if the push is full it waits for the next run.
 - **Never kept or sent:** key fragments, request bodies, key names, descriptions and source addresses (the address is kept only as a short hash, to pair echoes).
 
 ## When a Cloudflare incident fires

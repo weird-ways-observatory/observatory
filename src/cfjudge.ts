@@ -37,8 +37,10 @@ export function judge(e: Record<string, unknown>, who: Who): Judged {
   const type = action && typeof action.type === "string" ? action.type : undefined;
   const product = str(res?.product), rtype = str(res?.type);
   const label = `${word(res?.product)}/${word(res?.type)} ${word(type)}`;
-  const ctx = str(actor?.context), atype = str(actor?.type);
-  const how = ctx ? word(ctx) : atype ? word(atype) : "missing";
+  // A sign-in field Cloudflare left out (system writes: VERIFIED 2026-11-12, 60 of 60) differs from one that is
+  // present but not text: the second is malformed and never reads as "none" (Codex r1 #3).
+  const rawCtx = actor?.context, ctx = typeof rawCtx === "string" ? rawCtx : undefined, atype = str(actor?.type);
+  const how = ctx !== undefined ? word(ctx) : rawCtx !== undefined ? "unknown" : atype ? word(atype) : "missing";
   const attempted = action?.result !== "success";
   const out = (verdict: Verdict, pair?: Judged["pair"]): Judged => ({ verdict, label, how, attempted, pair });
   if (!action || !type || !actor || !res) return out({ v: "unreadable", why: "missing action, actor or resource" });
@@ -52,8 +54,9 @@ export function judge(e: Record<string, unknown>, who: Who): Judged {
   const ip = str(actor.ip_address);
   const keyPair = accountKey && !attempted ? { k: "key" as const, a: type as Action, ip } : undefined;
   const isBen = atype === "user" && typeof actor.id === "string" && actor.id === who.ben;
+  if (typeof res.product !== "string") return out({ v: "alert", why: "a change with no product named" }, keyPair);
 
-  if (atype === "system" && ctx === "") return out(SYSTEM.has(key) ? { v: "counted", group: "system" } : { v: "alert", why: "a system change of a kind that is never automatic" });
+  if (atype === "system" && rawCtx === undefined) return out(SYSTEM.has(key) ? { v: "counted", group: "system" } : { v: "alert", why: "a system change of a kind that is never automatic" });
   if (ctx === "dash") {
     if (!isBen) return out({ v: "alert", why: "a dashboard change by someone other than Ben" }, keyPair);
     if (anyKey || member) return out({ v: "alert", why: "a key or member change in the dashboard" }, keyPair);
@@ -69,6 +72,8 @@ export function judge(e: Record<string, unknown>, who: Who): Judged {
   if (ctx === "api_token") {
     const token = obj(actor.token);
     if (token?.id !== who.master) return out({ v: "alert", why: "a write by a key other than the vault's master key" }, keyPair);
+    // The master key is an account key: its writes carry actor.type "account" (VERIFIED 2026-11-12, 35 of 35).
+    if (atype !== "account") return out({ v: "alert", why: "a master-key write with an unknown actor type" }, keyPair);
     if (accountKey && (type === "create" || type === "delete")) return out({ v: "counted", group: "master writes, not yet matched" }, keyPair);
     return out({ v: "alert", why: accountKey ? "the master key updated a key (no job does that)" : "the master key wrote something other than a key" }, keyPair);
   }

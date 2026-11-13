@@ -1915,9 +1915,9 @@
       "id": "D8-standing-lines-stay",
       "row": "D8",
       "file": "src/cfaudit.ts",
-      "find": "const event = (i: Incident) => /^(change|echo|noecho):/.test(i.id);",
-      "replace": "const event = (i: Incident) => true;",
-      "why": "beec640b build a: standing lines never leave the list early",
+      "find": "const removable = (i: Incident) => !/^(lag$|tie:)/.test(i.id);",
+      "replace": "const removable = (i: Incident) => true;",
+      "why": "beec640b build a (a-2: lag and tie are the standing lines): standing lines never leave the list early",
       "test": {
         "file": "test/cfaudit.test.ts",
         "name": "B5/D13: a 1,000-event burst is judged over five runs, none skipped or doubled; lag alerts once, then clears"
@@ -1949,6 +1949,136 @@
         "name": "B5/D13: a 1,000-event burst is judged over five runs, none skipped or doubled; lag alerts once, then clears"
       },
       "expect": "the lag line is told once, even while the list overflows"
+    },
+    {
+      "id": "r1-1-incidents-with-bookmark",
+      "row": "D12",
+      "file": "src/cfaudit.ts",
+      "find": "    settle(); // Codex r1 #1: the page's incidents are saved with its bookmark, never after it\n",
+      "replace": "",
+      "why": "beec640b build a-2 (Codex r1): a page's incidents are saved with its bookmark",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#1: a crash after the page save but before the incident save still lists and tells the event"
+      },
+      "expect": "M:r1#1"
+    },
+    {
+      "id": "r1-2-closing-line",
+      "row": "A10",
+      "file": "src/cfaudit.ts",
+      "find": "    lines.push(closing(rest.slice(n)));\n    sent.push(...rest.slice(n));\n",
+      "replace": "",
+      "why": "beec640b build a-2 (Codex r1): incidents that do not fit are counted in one closing line and told this run",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#2: 32 unpaired echoes in one run all reach Ben in that run's one push; nothing waits for a later hour"
+      },
+      "expect": "M:r1#2"
+    },
+    {
+      "id": "r1-3-master-actor-type",
+      "row": "A4",
+      "file": "src/cfjudge.ts",
+      "find": "    if (atype !== \"account\") return out(",
+      "replace": "    if (false) return out(",
+      "why": "beec640b build a-2 (Codex r1): a master-key write must carry actor.type account",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#3: malformed actor fields alert -- a master write with no actor type, a non-string sign-in on a system kind"
+      },
+      "expect": "M:r1#3 master write without actor.type"
+    },
+    {
+      "id": "r1-3-context-absent",
+      "row": "A6",
+      "file": "src/cfjudge.ts",
+      "find": "atype === \"system\" && rawCtx === undefined",
+      "replace": "atype === \"system\" && ctx === undefined",
+      "why": "beec640b build a-2 (Codex r1): only an absent sign-in field is a system write; a non-text one is malformed",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#3: malformed actor fields alert -- a master write with no actor type, a non-string sign-in on a system kind"
+      },
+      "expect": "M:r1#3 non-string context"
+    },
+    {
+      "id": "r1-3-product-missing",
+      "row": "A6",
+      "file": "src/cfjudge.ts",
+      "find": "  if (typeof res.product !== \"string\") return out(",
+      "replace": "  if (false) return out(",
+      "why": "beec640b build a-2 (Codex r1): a missing resource.product alerts",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#3: malformed actor fields alert -- a master write with no actor type, a non-string sign-in on a system kind"
+      },
+      "expect": "missing resource.product"
+    },
+    {
+      "id": "r1-4-nested-validation",
+      "row": "D2",
+      "file": "src/cfaudit.ts",
+      "find": "if (validState(s)) return { state: s, rebuilt: false };",
+      "replace": "if (isObj(s) && s.v === VERSION) return { state: s as State, rebuilt: false };",
+      "why": "beec640b build a-2 (Codex r1): corrupt nested state is rebuilt",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#4: valid JSON with corrupt nested fields is rebuilt, never reloaded"
+      },
+      "expect": "M:r1#4"
+    },
+    {
+      "id": "r1-5-standing-bound",
+      "row": "D8",
+      "file": "src/cfaudit.ts",
+      "find": "const removable = (i: Incident) => !/^(lag$|tie:)/.test(i.id);",
+      "replace": "const removable = (i: Incident) => /^(change|echo|noecho):/.test(i.id);",
+      "why": "beec640b build a-2 (Codex r1): freshness and other durable lines stay within the bound",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#5: a sustained freshness failure keeps the list within its bound"
+      },
+      "expect": "M:r1#5"
+    },
+    {
+      "id": "r1-6-light-setting",
+      "row": "D9",
+      "file": "src/cfaudit.ts",
+      "find": "new URL(x ?? \"\").protocol === \"https:\"",
+      "replace": "new URL(x ?? \"\").protocol !== \"\"",
+      "why": "beec640b build a-2 (Codex r1): the light must be an https address, checked before anything is read",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#6: the light's address missing or malformed: did not finish, nothing read or saved"
+      },
+      "expect": "M:r1#6"
+    },
+    {
+      "id": "r1-7-weekly-whole",
+      "row": "D12",
+      "file": "src/cfaudit.ts",
+      "find": "    if (fits([line])) lines.push(line), (weekly = true);",
+      "replace": "    lines.push(line), (weekly = true);",
+      "why": "beec640b build a-2 (Codex r1): the weekly line is sent whole or waits",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1#7: on a Monday with a full message the weekly line arrives whole, or waits whole for the next run"
+      },
+      "expect": "M:r1#7"
+    },
+    {
+      "id": "D1-first-summary",
+      "row": "D1",
+      "file": "src/cfaudit.ts",
+      "find": "if (loaded.first && cursor && s.rebuiltAt === undefined) {",
+      "replace": "if (false) {",
+      "why": "beec640b build a-2 (Codex r1): a first backlog spanning runs is one summary, not a replay",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r1 drift 10 (D1): a first run whose backlog spans runs sends one summary, not a replay"
+      },
+      "expect": "M:D1 first-run summary"
     }
   ],
   "retired": []

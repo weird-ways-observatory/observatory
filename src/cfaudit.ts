@@ -29,6 +29,8 @@ export const MAX_INCIDENTS = 200; // the list, including one overflow line
 export const MAX_RECENT = 500; // events waiting 5 s for a possible pair
 export const REMIND_DAY = 1, REMIND_HOUR = 14; // Monday 14:00 UTC: the weekly line
 const HEX32 = /^[0-9a-f]{32}$/;
+const https = (x: string | undefined) => { try { return new URL(x ?? "").protocol === "https:"; } catch { return false; } };
+export const BUDGET = 1024; // alert.ts cuts a message here: every line is budgeted against the whole message
 
 export interface CfAuditEnv extends AlertEnv {
   COPY: Pick<R2Bucket, "get" | "put">;
@@ -56,23 +58,56 @@ interface State {
 
 const iso = (t: number) => new Date(t).toISOString();
 const ref = (id: string) => id.replace(/[^A-Za-z0-9]/g, "").slice(0, 8) || "none";
+const KIND: Record<string, [string, string]> = {
+  echo: ["key echo", "key echoes"], noecho: ["key event without an echo", "key events without an echo"],
+  fresh: ["freshness line", "freshness lines"], rebuilt: ["rebuild line", "rebuild lines"], first: ["start line", "start lines"],
+};
+/** One line counting the incidents that did not fit in a push, by kind: they are on the list, told by this line. */
+export function closing(xs: { id: string }[]) {
+  const by = new Map<string, number>();
+  for (const x of xs) { const k = x.id.split(":")[0]; by.set(k, (by.get(k) ?? 0) + 1); }
+  const kinds = [...by].map(([k, n]) => { const [one, many] = KIND[k] ?? ["other line", "other lines"]; return `${n} ${n === 1 ? one : many}`; });
+  return `and ${xs.length} more: ${kinds.join(", ")}; ask an agent to read the list`;
+}
 const hours = (ms: number) => Math.round(ms / 360_000) / 10;
-const fresh = (start: number): State => ({ v: VERSION, bm: { t: start, ids: [] }, recent: [], incidents: [], dropped: 0, week: { counts: {}, lag: 0 } });
+/** The weekly line's week: the latest Monday 14:00 UTC at or before `t` (its date is the key). */
+export function weekStart(t: number) {
+  const d = new Date(t), m = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((d.getUTCDay() + 7 - REMIND_DAY) % 7), REMIND_HOUR);
+  return m > t ? m - 7 * 86_400_000 : m;
+}
+// New state counts its own week as told: the first weekly line comes at the next Monday 14:00 UTC.
+const fresh = (start: number, now: number): State => ({ v: VERSION, bm: { t: start, ids: [] }, recent: [], incidents: [], dropped: 0, week: { counts: {}, lag: 0 }, remindedOn: iso(weekStart(now)).slice(0, 10) });
 async function hashIp(ip: string) {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`cfaudit-ip:${ip}`));
   return [...new Uint8Array(d)].slice(0, 6).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Loads state. `newer`: written by a later version of this code -- never read, never overwritten. */
-export function parseState(text: string | undefined, start: number, now: number): { state: State; rebuilt: boolean; newer?: boolean } {
-  if (text === undefined) return { state: fresh(start), rebuilt: false };
+const isObj = (x: unknown): x is Record<string, any> => typeof x === "object" && x !== null && !Array.isArray(x);
+const isStr = (x: unknown): x is string => typeof x === "string";
+const ACTIONS = new Set(["create", "delete", "update"]);
+/** Every field the reader uses, checked to its leaves: valid JSON with a wrong shape is corrupt (Codex r1 #4). */
+export function validState(s: unknown): s is State {
+  if (!isObj(s) || s.v !== VERSION) return false;
+  const { bm, witness, recent, incidents, week } = s;
+  return isObj(bm) && Number.isFinite(bm.t) && Array.isArray(bm.ids) && bm.ids.every(isStr)
+    && (witness === undefined || (isObj(witness) && isStr(witness.key) && Number.isFinite(witness.t)))
+    && Array.isArray(recent) && recent.every((r) => isObj(r) && isStr(r.id) && (r.k === "key" || r.k === "echo") && ACTIONS.has(r.a) && isStr(r.ip) && Number.isFinite(r.t) && (r.p === undefined || isStr(r.p)) && (r.pt === undefined || Number.isFinite(r.pt)))
+    && Array.isArray(incidents) && incidents.every((i) => isObj(i) && isStr(i.id) && isStr(i.text) && Number.isFinite(i.at) && typeof i.told === "boolean")
+    && Number.isInteger(s.dropped) && s.dropped >= 0
+    && isObj(week) && isObj(week.counts) && Object.values(week.counts).every((n) => Number.isInteger(n) && (n as number) >= 0) && Number.isFinite(week.lag)
+    && (s.remindedOn === undefined || isStr(s.remindedOn)) && (s.redTold === undefined || typeof s.redTold === "boolean")
+    && (s.rebuiltAt === undefined || Number.isFinite(s.rebuiltAt));
+}
+
+/** Loads state. `newer`: written by a later version of this code -- never read, never overwritten. `first`: none yet. */
+export function parseState(text: string | undefined, start: number, now: number): { state: State; rebuilt: boolean; newer?: boolean; first?: boolean } {
+  if (text === undefined) return { state: fresh(start, now), rebuilt: false, first: true };
   try {
-    const s = JSON.parse(text) as State;
-    if (typeof s?.v === "number" && s.v > VERSION) return { state: fresh(start), rebuilt: false, newer: true };
-    const ok = s?.v === VERSION && Number.isFinite(s.bm?.t) && Array.isArray(s.bm.ids) && Array.isArray(s.recent) && Array.isArray(s.incidents) && Number.isInteger(s.dropped) && s.week && typeof s.week.counts === "object";
-    if (ok) return { state: s, rebuilt: false };
+    const s: unknown = JSON.parse(text);
+    if (isObj(s) && typeof s.v === "number" && s.v > VERSION) return { state: fresh(start, now), rebuilt: false, newer: true };
+    if (validState(s)) return { state: s, rebuilt: false };
   } catch { /* unreadable: rebuilt below */ }
-  return { state: { ...fresh(start), rebuiltAt: now }, rebuilt: true };
+  return { state: { ...fresh(start, now), rebuiltAt: now }, rebuilt: true };
 }
 
 /**
@@ -114,16 +149,15 @@ async function page(get: Get, q: string): Promise<{ events: { id: string; t: num
   return { events, cursor };
 }
 
-const RANK = ["change", "echo", "rebuilt", "fresh", "tie", "lag", "noecho", "more"];
+const RANK = ["change", "echo", "rebuilt", "first", "fresh", "tie", "lag", "noecho", "more"];
 const rank = (i: Incident) => { const r = RANK.indexOf(i.id.split(":")[0]); return r < 0 ? RANK.length : r; };
 
 export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, start = START) {
-  const T = now.getTime(), ping = env.PING_URL_CFAUDIT;
+  const T = now.getTime(), ping = https(env.PING_URL_CFAUDIT) ? env.PING_URL_CFAUDIT! : undefined;
   const report: Record<string, unknown> = { cfaudit: "did not finish", capacity: `${PAGE} an hour (provisional until the CPU check card passes)` };
   const finish = async (ok: boolean, reason: string) => {
     report.cfaudit = ok ? "ran" : "did not finish";
     report.reason = redact(reason, env).slice(0, 1500);
-    report.setup = ping ? "complete" : "PING_URL_CFAUDIT not set: log only";
     console.log(JSON.stringify(report));
     if (ping) await fetchFn(new Request(ok ? ping : `${ping}/fail`, { method: "POST", body: JSON.stringify(report) })).catch(() => undefined);
     return report;
@@ -134,6 +168,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     !HEX32.test(env.CF_MAIN_ACCOUNT_ID ?? "") && "account id not set or malformed",
     !HEX32.test(env.CF_MASTER_KEY_ID ?? "") && "master key id not set or malformed",
     !HEX32.test(env.CF_BEN_USER_ID ?? "") && "Ben's user id not set or malformed",
+    !ping && "the light (PING_URL_CFAUDIT) not set or not an https address", // Codex r1 #6: with no light, nothing reaches Ben
   ].filter(Boolean);
   if (missing.length) return finish(false, missing.join("; "));
   const who = { master: env.CF_MASTER_KEY_ID!, ben: env.CF_BEN_USER_ID! };
@@ -154,6 +189,36 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   const add = (id: string, text: string, told = false) => { if (!incidents.has(id)) incidents.set(id, { id, text, at: T, told }); };
   if (loaded.rebuilt) add(`rebuilt:${T}`, `the Cloudflare check's saved state was unreadable and was rebuilt from ${iso(start).slice(0, 10)}: changes found while it catches up are on the list, sent only as this line`);
   const reds: string[] = [];
+  /**
+   * Writes the incident map into the state, worst first, at most MAX_INCIDENTS with one counted overflow line.
+   * Run before every save, so a save never holds a bookmark without the incidents read up to it. Idempotent:
+   * what it cuts leaves the map and is counted once. Only lag and tie lines never leave early: they are
+   * recomputed each run, so one would come back as new and be told again; they are at most two. Every other
+   * line (an event's, freshness, rebuilt, first) can leave (Codex r1 #5). Told ones leave first, oldest first;
+   * an untold one is never pushed out by a told one; still over, the newest untold ones are counted, not kept.
+   */
+  const settle = () => {
+    const prevMore = incidents.get("more");
+    incidents.delete("more");
+    let list = [...incidents.values()].sort((a, b) => rank(a) - rank(b) || a.at - b.at);
+    if (list.length > MAX_INCIDENTS - 1) {
+      const removable = (i: Incident) => !/^(lag$|tie:)/.test(i.id);
+      const told = list.filter((i) => i.told && removable(i)).sort((a, b) => a.at - b.at), untold = list.filter((i) => !i.told && removable(i));
+      const excess = list.length - (MAX_INCIDENTS - 1), gone = new Set(told.slice(0, excess).map((i) => i.id));
+      const cut = Math.max(0, excess - gone.size);
+      for (const i of untold.sort((a, b) => b.at - a.at).slice(0, cut)) gone.add(i.id);
+      for (const id of gone) incidents.delete(id);
+      list = list.filter((i) => !gone.has(i.id));
+      s.dropped += gone.size;
+    }
+    if (s.dropped) {
+      const text = `${s.dropped} more Cloudflare incidents could not be kept: ask an agent to read the log`;
+      const more = { id: "more", text, at: prevMore?.at ?? T, told: prevMore?.told === true && prevMore.text === text };
+      incidents.set("more", more);
+      list.push(more);
+    }
+    s.incidents = list;
+  };
 
   // 1. This run's own read: tokens/verify, answered by Cloudflare and so logged as a view by our key.
   const v = await get("/tokens/verify");
@@ -211,6 +276,14 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     }
     judged += judgedHere;
     cursor = p.cursor;
+    if (loaded.first && cursor && s.rebuiltAt === undefined) {
+      // D1: a first backlog that will not fit in this run is listed, not replayed: one summary line now, and every
+      // change read until the check catches up is on the list, told as that line (as a rebuild is, D2).
+      for (const i of incidents.values()) i.told = true;
+      s.rebuiltAt = T;
+      add(`first:${T}`, `the Cloudflare check started: changes since ${iso(start).slice(0, 10)} found while it catches up are on the list, sent only as this line`);
+    }
+    settle(); // Codex r1 #1: the page's incidents are saved with its bookmark, never after it
     if (!(await saver.save(s))) return stop(); // per page: a run cut short loses at most this page
     if (!cursor) { ended = true; break; }
     if (judgedHere) break; // one judging page a run
@@ -264,63 +337,57 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   } else if (behind === 0) incidents.delete("lag");
   for (const id of [...incidents.keys()]) if (id.startsWith("tie:") && Number(id.slice(4)) < s.bm.t) incidents.delete(id);
 
-  // 6. The list: worst first, at most MAX_INCIDENTS with one counted overflow line.
-  let list = [...incidents.values()].filter((i) => i.id !== "more").sort((a, b) => rank(a) - rank(b) || a.at - b.at);
-  if (list.length > MAX_INCIDENTS - 1) {
-    // Only incidents about one event may leave early: standing lines (lag, freshness, tie, rebuilt)
-    // never do, or one would come back as new and be told again. Told ones leave first, oldest first;
-    // an untold one is never pushed out by a told one.
-    const event = (i: Incident) => /^(change|echo|noecho):/.test(i.id);
-    const told = list.filter((i) => i.told && event(i)).sort((a, b) => a.at - b.at), untold = list.filter((i) => !i.told && event(i));
-    const excess = list.length - (MAX_INCIDENTS - 1), gone = new Set(told.slice(0, excess).map((i) => i.id));
-    const cut = Math.max(0, excess - gone.size); // still over: the newest untold ones are counted, not kept
-    const cutIds = new Set(untold.sort((a, b) => b.at - a.at).slice(0, cut).map((i) => i.id));
-    list = list.filter((i) => !gone.has(i.id) && !cutIds.has(i.id));
-    s.dropped += gone.size + cutIds.size;
-  }
-  const prevMore = incidents.get("more");
-  if (s.dropped) list.push({ id: "more", text: `${s.dropped} more Cloudflare incidents could not be kept: ask an agent to read the log`, at: prevMore?.at ?? T, told: prevMore?.told === true && prevMore.text.startsWith(`${s.dropped} `) });
-  s.incidents = list;
+  // 6. The list: worst first, at most MAX_INCIDENTS with one counted overflow line (settle, above).
+  settle();
+  const list = s.incidents;
   report.judged = judged;
   report.skipped = skipped;
   report.open = list.length;
 
   // 7. Tell Ben: untold incidents are saved first, then one alert, then saved again marked told.
+  //    The whole message is budgeted against alert.ts's cut (Codex r1 #7). Every untold incident is in this run's
+  //    push, by its line or counted in one closing line, so none waits for a later hour (Codex r1 #2). The weekly
+  //    line goes only whole; if it does not fit, it waits for the next run, this week's counts kept.
   const ok = reds.length === 0;
-  const today = iso(T).slice(0, 10);
-  const remind = now.getUTCDay() === REMIND_DAY && now.getUTCHours() >= REMIND_HOUR && s.remindedOn !== today;
+  const remindKey = iso(weekStart(T)).slice(0, 10);
+  const remind = s.remindedOn !== remindKey;
   const untold = list.filter((i) => !i.told);
   report.new = untold.length;
   if (!(await saver.save(s))) return stop();
-  if (ping) {
-    const lines: string[] = [], sent: Incident[] = [];
-    if (!ok && !s.redTold) lines.push(`The Cloudflare check could not finish: ${reds.join("; ")}`.slice(0, 300));
-    const changes = untold.filter((i) => i.id.startsWith("change:"));
-    if (changes.length) {
-      lines.push(`${changes[0].text.slice(0, 400)}${changes.length > 1 ? ` (and ${changes.length - 1} more)` : ""}. Ask an agent to look up the ref.`);
-      sent.push(...changes);
+  const light = ping!;
+  const lines: string[] = [], sent: Incident[] = [];
+  const fits = (more: string[]) => redact([...lines, ...more].join("\n"), env).length <= BUDGET;
+  if (!ok && !s.redTold) lines.push(`The Cloudflare check could not finish: ${reds.join("; ")}`.slice(0, 300));
+  const changes = untold.filter((i) => i.id.startsWith("change:"));
+  if (changes.length) {
+    lines.push(`${changes[0].text.slice(0, 400)}${changes.length > 1 ? ` (and ${changes.length - 1} more)` : ""}. Ask an agent to look up the ref.`);
+    sent.push(...changes);
+  }
+  const rest = untold.filter((x) => !x.id.startsWith("change:"));
+  for (let n = 0; n < rest.length; n++) {
+    const line = rest[n].text.slice(0, 300), after = rest.slice(n + 1);
+    if (fits(after.length ? [line, closing(after)] : [line])) { lines.push(line); sent.push(rest[n]); continue; }
+    lines.push(closing(rest.slice(n)));
+    sent.push(...rest.slice(n));
+    break;
+  }
+  let weekly = false;
+  if (remind) {
+    const c = Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(", ") || "no counted writes";
+    const line = `Cloudflare this week: ${c}; largest lag ${hours(s.week.lag)} h; ${list.length} open incident${list.length === 1 ? "" : "s"}.`;
+    if (fits([line])) lines.push(line), (weekly = true);
+  }
+  if (lines.length) {
+    const title = changes.length ? "Observatory: Cloudflare changed with no approved request on record" : !ok && !s.redTold ? "Observatory: the Cloudflare check could not finish" : sent.length ? "Observatory: Cloudflare check" : "Observatory: Cloudflare this week";
+    // A complete run turns the light green first, so a fallback /fail is a state change that emails.
+    const green = ok && (await fetchFn(new Request(light, { method: "POST", body: "run complete; an alert follows" })).then((r) => r.ok, () => false));
+    const via = await alert({ ...env, PING_URL: light }, fetchFn, title, lines.join("\n"));
+    if (via === "pushover" || (via === "healthchecks" && green)) {
+      for (const i of sent) i.told = true;
+      if (weekly) (s.remindedOn = remindKey), (s.week = { counts: {}, lag: 0 });
     }
-    for (const i of untold.filter((x) => !x.id.startsWith("change:"))) {
-      if ([...lines, i.text].join("\n").length > 900) break;
-      lines.push(i.text.slice(0, 300));
-      sent.push(i);
-    }
-    if (remind) {
-      const c = Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(", ") || "no counted writes";
-      lines.push(`Cloudflare this week: ${c}; largest lag ${hours(s.week.lag)} h; ${list.length} open incident${list.length === 1 ? "" : "s"}.`.slice(0, 300));
-    }
-    if (lines.length) {
-      const title = changes.length ? "Observatory: Cloudflare changed with no approved request on record" : !ok && !s.redTold ? "Observatory: the Cloudflare check could not finish" : sent.length ? "Observatory: Cloudflare check" : "Observatory: Cloudflare this week";
-      // A complete run turns the light green first, so a fallback /fail is a state change that emails.
-      const green = ok && (await fetchFn(new Request(ping, { method: "POST", body: "run complete; an alert follows" })).then((r) => r.ok, () => false));
-      const via = await alert({ ...env, PING_URL: ping }, fetchFn, title, lines.join("\n"));
-      if (via === "pushover" || (via === "healthchecks" && green)) {
-        for (const i of sent) i.told = true;
-        if (remind) (s.remindedOn = today), (s.week = { counts: {}, lag: 0 });
-      }
-      if (via === "pushover" && !ok) s.redTold = true;
-      if (!(await saver.save(s))) return stop();
-    }
+    if (via === "pushover" && !ok) s.redTold = true;
+    if (!(await saver.save(s))) return stop();
   }
   if (ok && s.redTold) {
     s.redTold = false;
