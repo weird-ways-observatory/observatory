@@ -13,6 +13,9 @@ import { STATE_KEY as RECORDS_KEY } from "./records.ts";
 const MIN = 60_000, H = 60 * MIN;
 export const RESULT_WAIT_MS = 15 * MIN, WARM_MS = GRANT_TTL_MS + H, MAX_PENDING = 500, STALE_MS = 6 * H;
 export const HELPER_MS = 24 * H, HC_IDLE_MS = 48 * H, LATE_KEEP_MS = 72 * H, PROBE_MS = 6 * MIN, INDEX_MONTHS = 36;
+// A replay reads 3 pages (600 events) a run; 24 runs is a day and 14,400 events, about 150 times the busiest real
+// hour (93): a replay still unfinished then is stuck (one instant holding more than a run reads), so the light goes red.
+export const REPLAY_RUNS = 24;
 export const EPOCHS_KEY = "state/cfepochs.json", INDEX_PREFIX = "state/cfindex/";
 export const MASTER_GROUP = "master writes, not yet matched";
 const HC_JOB = "cf.token.headcount.setup";
@@ -25,7 +28,7 @@ interface Grant { job: string; req?: Stamp; appr?: Stamp; res?: Stamp; cf?: { ma
 interface Effects { gen: number; since: number; covered_to: number; grants: Record<string, Grant>; retired: Record<string, number>; revoked: Record<string, string>; replay_from?: number }
 /** One master event: action, key id, time, success, epoch; `s`/`x` name kind and expiry (creates); `g`/`j`/`r` its tap once matched; `o` lifetime decided. */
 export interface Ev { id: string; a: "create" | "delete"; k: string; t: number; ok: boolean; ep: number; s?: string; x?: number; g?: string; j?: string; r?: number; o?: 1 }
-export interface M { t: number; ep: number; from?: number; since?: number; gen?: number; cov: number; pend: Ev[]; expl: Ev[]; late: Ev[]; hc: Record<string, number>; done: string[]; rev: string[]; rj: string[]; rp?: { s: number; from: number; to: number } }
+export interface M { t: number; ep: number; from?: number; since?: number; gen?: number; cov: number; pend: Ev[]; expl: Ev[]; late: Ev[]; hc: Record<string, number>; done: string[]; rev: string[]; rj: string[]; rp?: { s: number; from: number; ids: string[]; to: number; runs: number } }
 
 const isO = (x: unknown): x is Record<string, any> => typeof x === "object" && x !== null && !Array.isArray(x);
 const fin = (x: unknown): x is number => Number.isFinite(x), str = (x: unknown): x is string => typeof x === "string";
@@ -42,7 +45,7 @@ export function readEffects(x: unknown): Effects | string {
 }
 const evOk = (e: unknown) => isO(e) && str(e.id) && (e.a === "create" || e.a === "delete") && str(e.k) && fin(e.t) && typeof e.ok === "boolean" && Number.isInteger(e.ep);
 const validM = (m: unknown): m is M => isO(m) && fin(m.t) && Number.isInteger(m.ep) && fin(m.cov) && [m.pend, m.expl, m.late].every((l) => Array.isArray(l) && l.every(evOk))
-  && isO(m.hc) && [m.done, m.rev, m.rj].every(strs) && (m.rp === undefined || (isO(m.rp) && [m.rp.s, m.rp.from, m.rp.to].every(fin)));
+  && isO(m.hc) && [m.done, m.rev, m.rj].every(strs) && (m.rp === undefined || (isO(m.rp) && [m.rp.s, m.rp.from, m.rp.to, m.rp.runs].every(fin) && strs(m.rp.ids)));
 const iso = (t: number) => new Date(t).toISOString();
 const month = (t: number, back = 0) => { const d = new Date(t); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - back, 1)).toISOString().slice(0, 7); };
 type Copy = Pick<R2Bucket, "get" | "put">;
@@ -94,7 +97,7 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number }; m?: 
   // Missing or corrupt matching state is a recovery from the last epoch (13.1); `m.t` behind the bookmark is too.
   const m: M = validM(s.m) ? s.m : { t: epochs.at(-1)?.boundary ?? s.bm.t, ep: epochs.at(-1)?.n ?? 0, from: epochs[0]?.boundary, cov: 0, pend: [], expl: [], late: [], hc: {}, done: [], rev: [], rj: [] };
   s.m = m;
-  if (recovering(m, s.bm.t)) m.rp = { s: m.t, from: m.t, to: s.bm.t }, await addEpoch(s.bm.t);
+  if (recovering(m, s.bm.t)) m.rp = { s: m.t, from: m.t, ids: [], to: s.bm.t, runs: 0 }, await addEpoch(s.bm.t);
   if (fx && m.since !== undefined && (fx.since !== m.since || fx.gen < m.gen!)) reset = true, add(`reset:${fx.since}`, `the front-desk tap records restarted at ${iso(fx.since)}: master writes before ${iso(fx.since + WARM_MS)} not yet matched are alerted as unmatchable`);
   if (fx && !reset && fx.covered_to < m.cov) bad = "their coverage went backwards", fx = undefined;
   // Before matching has seen effects or activated, none is the deployed starting state (4.5), not a fault.
@@ -135,15 +138,23 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number }; m?: 
   async function replay(page: Page): Promise<string | undefined> {
     const rp = m.rp;
     if (!rp) return;
+    // `since` stays fixed for the cursor's whole life (this run); the position moves past every event read, master or
+    // not, with the ids at its instant, like the main bookmark, so the next run starts where this one stopped.
     let cursor: string | undefined, lost = false;
+    const since = rp.from;
     for (let p = 0; p < 3; p++) {
-      const pg = await page(`/logs/audit?since=${iso(rp.from)}&before=${iso(rp.to + 1)}&direction=asc&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      const pg = await page(`/logs/audit?since=${iso(since)}&before=${iso(rp.to + 1)}&direction=asc&limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
       if (pg.bad && /answered 4(?!01|03|29)\d\d/.test(pg.bad)) { lost = true; break; }
       if (pg.bad) return `replay: ${pg.bad}`;
-      for (const { id, t, e } of pg.events) if (isMaster(judge(e, who))) take(e, id, t), (rp.from = t);
+      for (const { id, t, e } of pg.events) {
+        if (t < rp.from || (t === rp.from && rp.ids.includes(id))) continue;
+        if (isMaster(judge(e, who))) take(e, id, t);
+        if (t > rp.from) (rp.from = t), (rp.ids = [id]);
+        else rp.ids.push(id);
+      }
       if (!(cursor = pg.cursor)) break;
     }
-    if (cursor) return; // more next hour; matching stays incomplete meanwhile
+    if (cursor) return ++rp.runs >= REPLAY_RUNS ? `the replay of what build a judged alone is unfinished after ${rp.runs} runs, at ${iso(rp.from)}` : undefined; // more next hour; incomplete meanwhile
     if (lost) add(`unavailable:${rp.from}`, `matching incomplete: Cloudflare no longer returns the log from ${iso(rp.from)} to ${iso(rp.to)}; master writes in it cannot be judged`);
     add(`gap:${rp.s}`, `master writes from ${iso(rp.s)} to ${iso(rp.to)} were not judged when they happened (build b was off): ${word(countIn(rp.s, rp.to), "master write")} in that range, judged now${lost ? ", except what Cloudflare no longer returns" : ""}`);
     delete m.rp;

@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runCfAudit, STATE_KEY, SETTLE_MS } from "../src/cfaudit.ts";
-import { EPOCHS_KEY, MAX_PENDING, RESULT_WAIT_MS, WARM_MS } from "../src/cfmatch.ts";
+import { EPOCHS_KEY, MAX_PENDING, REPLAY_RUNS, RESULT_WAIT_MS, WARM_MS } from "../src/cfmatch.ts";
 import { b64, keyFor, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
 import { CF_FROM } from "../src/card.ts";
 import { runRecords, STATE_KEY as RECORDS_KEY, type Pin, type RecordsEnv } from "../src/records.ts";
@@ -85,6 +85,7 @@ test("row 1: an honest trace per job is matched with no unmatched alert and a cl
   assert.deepEqual(w.has("reverse:"), [], "the reverse check flagged an honest tap");
   assert.equal(w.m().expl.length, 15, "not every honest master write was matched");
   assert.equal(w.m().pend.length, 0, "an honest write is still pending");
+  assert.equal(w.m().t, state(w.b).bm.t, "the matching checkpoint did not move with the bookmark");
 });
 
 test("row 2: a create and a delete no tap names alert once coverage passes; held before", async () => {
@@ -97,6 +98,8 @@ test("row 2: a create and a delete no tap names alert once coverage passes; held
   assert.deepEqual(w.has("change:").map((i) => i.id).sort(), ["change:x1", "change:x2"], "an unnamed create or delete did not alert");
   assert.match(w.has("change:x1")[0].text, /master key that no approved tap names/, "the alert does not say what it is");
   assert.doesNotMatch(w.has("change:x1")[0].text, new RegExp(id(1)), "the alert names the key");
+  await w.run(T + 80 * H);
+  assert.equal(w.m().late.length, 0, "alerted events were kept for late results past 72 h");
 });
 
 test("row 2: a master-key update alerts at once", async () => {
@@ -197,6 +200,7 @@ test("row 9: a helper outliving 24 h is an incident; the installed headcount key
   add(w, mc("o1", T + 10_000, id(1)), mc("o2", T + 10 * MIN + 10_000, inst, { name: "front-desk headcount a", exp: null }), mc("o3", T + 20 * MIN + 10_000, cand, { name: "front-desk headcount b", exp: null }));
   add(w, hcRead("rd", T + 26 * H, inst));
   await w.run(T + 2 * H);
+  assert.deepEqual(w.has("outlived:"), [], "a helper was flagged before 24 h");
   await w.run(T + 26 * H);
   assert.deepEqual(w.has("outlived:").map((i) => i.id), ["outlived:o1"], "a 24 h helper was not flagged, or a headcount key was decided early");
   await w.run(T + 50 * H);
@@ -241,6 +245,26 @@ test("row 13: effects missing, malformed or with coverage going backwards explai
   }
 });
 
+test("row 13: tap records held back at capacity (replay_from) explain nothing and report matching incomplete", async () => {
+  const w = world({ "aaaaaaaa-1": grant("cf.dns.list", T, { made: [id(1)], deleted: [] }) });
+  await w.run(T);
+  add(w, mc("h1", T + 10_000, id(1)));
+  (w.fx as any).replay_from = 5;
+  const r = await w.run(T + H);
+  assert.equal(w.m().expl.length, 0, "an event was explained while the tap records were held back");
+  assert.equal(r.matching, "incomplete", "held-back tap records did not report matching incomplete");
+});
+
+test("row 25: tap records that restart (a new since) are a recovery: a write before the new warm-up alerts as unmatchable", async () => {
+  const w = world({ "aaaaaaaa-1": grant("cf.dns.list", T, { made: [id(1)], deleted: [] }) });
+  await w.run(T);
+  add(w, mc("rs1", T + 10_000, id(1)));
+  w.fx.since = T - H; // the records state was lost and restarted
+  await w.run(T + H);
+  assert.equal(w.has("reset:").length, 1, "a restart of the tap records was not raised");
+  assert.match(w.has("change:rs1")[0]?.text ?? "", /restarted/, "a write the restarted records cannot cover was matched or held");
+});
+
 test("row 14: an explained event whose tap is later tainted is re-judged once", async () => {
   const w = world({ "aaaaaaaa-1": grant("cf.dns.list", T, { made: [id(1)], deleted: [] }) });
   add(w, mc("t1", T + 10_000, id(1)));
@@ -277,6 +301,10 @@ test("row 16: before B_FROM master writes are counted apart; the first active ru
   assert.deepEqual(JSON.parse(w.b.store.get(EPOCHS_KEY)!.body).epochs.map((e: any) => e.boundary), [ON], "the epoch was not appended once at B_FROM");
   await w.run(ON + 2 * H);
   assert.equal(w.has("on:").length, 1);
+  const w2 = world(); // behind: a write from before B_FROM is first read after activation
+  add(w2, mc("b2", ON - 30 * MIN, id(2)));
+  await w2.run(ON + H);
+  assert.equal(w2.m().pend.length + w2.m().expl.length + w2.has("change:").length, 0, "a pre-activation write read after activation was judged");
 });
 
 test("row 21: a tap with unfinished matching is not acknowledged done; once finished it is", async () => {
@@ -288,6 +316,10 @@ test("row 21: a tap with unfinished matching is not acknowledged done; once fini
   add(w2, mc("a1", T + 10_000, id(1)), md("a2", T + 11_000, id(1)));
   await w2.run(T + 2 * H);
   assert.ok(w2.m().done.includes("aaaaaaaa-1"), "a finished tap was not acknowledged done");
+  const w3 = world({ "aaaaaaaa-1": grant("cf.token.accept", T, { made: [], deleted: [] }) });
+  add(w3, mc("a3", T + 10_000, id(3)));
+  await w3.run(T + 2 * H, T);
+  assert.ok(!w3.m().done.includes("aaaaaaaa-1"), "a tap with a pending event in its window was acknowledged done");
 });
 
 test("row 22: a finding on a retired record re-judges its events from the monthly index, at any age", async () => {
@@ -306,6 +338,7 @@ test("row 22: a finding on a retired record re-judges its events from the monthl
   await w.run(T + 32 * 24 * H);
   await w.run(T + 33 * 24 * H);
   assert.deepEqual(w.has("unexplained-after:").map((i) => i.id).sort(), ["unexplained-after:i1", "unexplained-after:i2"], "a retired tap's events were not re-judged once from the index");
+  assert.deepEqual(w.m().rj, [String(g.res.n)], "the re-judged record was not remembered, so it would be re-judged again");
 });
 
 test("row 23: failed events carrying named ids explain nothing and satisfy nothing", async () => {
@@ -369,6 +402,50 @@ test("row 25: matching state lost while epochs exist is a recovery: replayed fro
   await w.run(T + 3 * H);
   assert.equal(w.has("change:n1").length, 1, "an event from before the loss was not judged");
   assert.equal(w.has("gap:").length, 1, "no gap incident");
+});
+
+/** Build a ran while b was off: `m` kept, the bookmark moved to `to`. */
+function revert(w: ReturnType<typeof world>, to: number) {
+  const s = state(w.b);
+  s.bm = { t: to, ids: [] };
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: `builda${to}` });
+}
+const views = (w: ReturnType<typeof world>, from: number, n: number) => { for (let i = 0; i < n; i++) w.log.push(shapes.view(`v${from}-${i}`, from + i, id(77))); };
+
+test("security a: a replay range of more pages than one run reads, with no master write on them, still progresses and finishes", async () => {
+  const w = world();
+  await w.run(T, 0);
+  views(w, T + MIN, 700); // more than one run's replay pages, none a master write
+  add(w, mc("ra1", T + 2 * H, id(1)));
+  revert(w, T + 3 * H);
+  for (let n = 1; n <= 3; n++) await w.run(T + 3 * H + n * MIN);
+  assert.equal(w.has("gap:").length, 1, "a replay with no master writes on its pages never finished");
+  assert.ok(w.m().pend.some((e: any) => e.id === "ra1") || w.has("change:ra1").length, "the master write after the quiet pages was never read");
+});
+
+test("security b: a cursor is never paired with a changed since: no event in the replay range is skipped", async () => {
+  const w = world();
+  await w.run(T, 0);
+  for (let i = 0; i < 450; i++) w.log.push(i === 100 ? mc("rb1", T + MIN + i, id(1)) : i === 250 ? mc("rb2", T + MIN + i, id(2)) : shapes.view(`w${i}`, T + MIN + i, id(77)));
+  add(w);
+  revert(w, T + 3 * H);
+  await w.run(T + 4 * H);
+  const seen = (e: string) => w.m().pend.some((x: any) => x.id === e) || w.has(`change:${e}`).length > 0;
+  assert.ok(seen("rb1") && seen("rb2"), "a master write was skipped by a cursor paired with a moved since");
+});
+
+test("security c: a replay still unfinished after REPLAY_RUNS runs turns the light red", async () => {
+  const w = world();
+  await w.run(T, 0);
+  for (let i = 0; i < 3 * 200 * (REPLAY_RUNS + 1); i++) w.log.push(shapes.view(`x${i}`, T + MIN + i, id(77)));
+  add(w);
+  revert(w, T + 3 * H);
+  let r: Record<string, unknown> = {};
+  for (let n = 1; n < REPLAY_RUNS; n++) r = await w.run(T + 3 * H + n * MIN);
+  assert.equal(r.cfaudit, "ran", `a replay within its runs turned red: ${r.reason}`);
+  r = await w.run(T + 3 * H + REPLAY_RUNS * MIN);
+  assert.equal(r.cfaudit, "did not finish", "a replay unfinished after its runs left the light green");
+  assert.match(String(r.reason), /replay/, "the red reason does not name the replay");
 });
 
 test("row 28: a replay range Cloudflare no longer returns raises evidence unavailable; matching stays incomplete", async () => {
