@@ -29,7 +29,7 @@ test("A1: a write by a key other than the master key alerts once, with one push"
   await run(T0 + H);
   assert.deepEqual(ids(b), ["change:e1"], "M:A1 non-master write listed");
   assert.equal(cf.alerts.length, 1);
-  assert.match(cf.alerts[0].message, /no approved request on record: dns_records\/missing create by api_token at .*ref e1 \(a write by a key other than the vault's master key\)/, "M:A1 why");
+  assert.match(cf.alerts[0].message, /no approved request on record: dns_records create by an API key at .*ref e1 \(a write by a key other than the vault's master key\)/, "M:A1 why");
   await run(T0 + 2 * H);
   assert.equal(cf.alerts.length, 1, "told once, never again");
 });
@@ -691,4 +691,27 @@ test("r2 (Ben a4ef945a A): in an overflowing push, unpaired echoes get their own
   for (const r of ["lonely01", "lonely02"]) assert.match(msg, new RegExp(`ref ${r}`), `M:r2 unpaired ${r} named`);
   assert.match(msg, /\d+ paired key echoes/);
   assert.ok(state(b).incidents.filter((i: any) => i.id.startsWith("echo:")).every((i: any) => i.told));
+});
+
+// ---------- Live words (2026-11-13, first live alert) ----------
+
+test("live-1: refs come from the id's unique end, so two events a second apart never share one", async () => {
+  // Cloudflare ids are time-ordered (UUIDv7): events within about a minute share their first 8 characters.
+  const key = "0190aaaa-0001-7000-8000-00000000k001", echo = "0190aaaa-0002-7000-8000-00000000e002";
+  const { cf, run } = setup([
+    ev(key, T0, { ctx: "dash", atype: "user", actor: BEN, product: "tokens" }),
+    ev(echo, T0 + 600, { ctx: "api", atype: "user", actor: BEN, product: "account", rtype: "settings", desc: "TOKEN_CREATE" }),
+  ]);
+  await run(T0 + H);
+  const msg = cf.alerts.map((a) => a.message).join("\n");
+  assert.match(msg, /ref 0000k001/, "M:live-1 key ref from the id's end");
+  assert.match(msg, /ref 0000e002/, "M:live-1 echo ref from the id's end");
+  assert.doesNotMatch(msg, /ref 0190aaaa/, "M:live-1 no shared time prefix as a ref");
+});
+
+test("live-2: a dashboard key change reads in plain words, with no absent field shown", async () => {
+  const { cf, run } = setup([ev("k9", T0, { ctx: "dash", atype: "user", actor: BEN, product: "tokens" })]);
+  await run(T0 + H);
+  assert.match(cf.alerts[0].message, /no approved request on record: API key create in the dashboard at /, "M:live-2 plain words");
+  assert.doesNotMatch(cf.alerts[0].message, /\/missing|by dash/, "M:live-2 no raw field names");
 });
