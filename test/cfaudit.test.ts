@@ -559,3 +559,115 @@ test("D10 screening (c-box, not capacity evidence): a worst-case run -- a full p
   assert.ok(ms < 1000, `screening run took ${ms} ms on the c-box`);
   void cf;
 });
+
+// ---------- Build a-2: Codex r1 fix-now 1-7 and drift 10 (REVIEW-codex-beec640b-build-a-r1.md) ----------
+// Each test below failed on 458b566 (build a as reviewed) before its fix.
+
+test("r1#1: a crash after the page save but before the incident save still lists and tells the event", async () => {
+  const { b, cf, run } = setup([]);
+  await run(T0); // state exists, nothing to read yet
+  cf.log.push(ev("lost", T0 + 10 * M, { token: OTHER }));
+  b.throwOn(2); // the page save lands; the untold save throws: the run stops
+  await run(T0 + H);
+  await run(T0 + 2 * H); // restart from the page save's state
+  assert.ok(ids(b).includes("change:lost"), "M:r1#1 incident saved with its bookmark");
+  assert.equal(cf.alerts.filter((a) => /ref lost/.test(a.message)).length, 1);
+});
+
+test("r1#2: 32 unpaired echoes in one run all reach Ben in that run's one push; nothing waits for a later hour", async () => {
+  const { b, cf, run } = setup([]);
+  await run(T0);
+  for (let n = 0; n < 32; n++) cf.log.push(shapes.echo(`echo${String(n).padStart(4, "0")}`, T0 + 10 * M + n * 60_000, "TOKEN_CREATE", `192.0.2.${n + 1}`));
+  await run(T0 + H);
+  const echoes = state(b).incidents.filter((i: any) => i.id.startsWith("echo:"));
+  assert.equal(echoes.length, 32);
+  assert.ok(echoes.every((i: any) => i.told), "M:r1#2 every echo told in its own run");
+  assert.equal(cf.alerts.length, 1);
+  assert.ok(cf.alerts[0].message.length <= 1024);
+  assert.match(cf.alerts[0].message, /and \d+ more: \d+ key echoes?; ask an agent to read the list/);
+});
+
+test("r1#3: malformed actor fields alert -- a master write with no actor type, a non-string sign-in on a system kind", () => {
+  const noType = shapes.masterCreate("m", T0); delete noType.actor.type;
+  assert.equal(judge(noType, who).verdict.v, "alert", "M:r1#3 master write without actor.type");
+  assert.equal(judge(ev("u", T0, { token: MASTER, product: "tokens", atype: "user" }), who).verdict.v, "alert", "master write by a user-type actor");
+  const numCtx = shapes.systemDns("s", T0); numCtx.actor.context = 5;
+  assert.equal(judge(numCtx, who).verdict.v, "alert", "M:r1#3 non-string context is not 'none'");
+  assert.equal(judge(ev("e", T0, { ctx: "", atype: "system", product: "dns", rtype: "record" }), who).verdict.v, "alert", "an empty context is not an absent one");
+  const noProduct = shapes.benDash("d", T0, "", "communication_preferences"); delete noProduct.resource.product;
+  assert.equal(judge(noProduct, who).verdict.v, "alert", "missing resource.product");
+  assert.deepEqual(judge(shapes.benDash("d", T0, "", "communication_preferences"), who).verdict, { v: "counted", group: "dashboard" }, "an empty product is a value");
+});
+
+test("r1#4: valid JSON with corrupt nested fields is rebuilt, never reloaded", async () => {
+  const good = { v: VERSION, bm: { t: START, ids: [] }, recent: [], incidents: [], dropped: 0, week: { counts: {}, lag: 0 } };
+  const bad: Record<string, unknown>[] = [
+    { ...good, incidents: [null] },
+    { ...good, week: { counts: null, lag: 0 } },
+    { ...good, recent: [{}] },
+    { ...good, bm: { t: START, ids: [5] } },
+    { ...good, week: { counts: { system: "x" }, lag: 0 } },
+    { ...good, witness: { key: 1, t: 0 } },
+  ];
+  for (const s of bad) {
+    const { b, run } = setup([shapes.systemDns("s", T0), ev("c", T0 + 1000, { token: OTHER })]);
+    b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "x" });
+    const r = await run(T0 + H);
+    assert.equal(r.cfaudit, "ran", `M:r1#4 ${JSON.stringify(s).slice(0, 80)}`);
+    assert.ok(ids(b).some((i: string) => i.startsWith("rebuilt:")), "rebuilt");
+  }
+});
+
+test("r1#5: a sustained freshness failure keeps the list within its bound", async () => {
+  const { b, run } = setup([], { logReads: false });
+  for (let k = 1; k <= 260; k++) await run(T0 + k * H);
+  const s = state(b);
+  assert.ok(s.incidents.length <= 200, `M:r1#5 ${s.incidents.length} incidents`);
+  assert.ok(s.dropped > 0 && s.incidents.at(-1).id === "more", "the overflow is counted");
+});
+
+test("r1#6: the light's address missing or malformed: did not finish, nothing read or saved", async () => {
+  for (const v of [undefined, "", "not a url", "http://hc.example/ping/cfaudit"]) {
+    const { b, cf, run } = setup([ev("z", T0, { token: OTHER })]);
+    const r = await run(T0 + H, { PING_URL_CFAUDIT: v });
+    assert.equal(r.cfaudit, "did not finish", `M:r1#6 ${v}`);
+    assert.equal(cf.calls.length, 0, "Cloudflare not called");
+    assert.equal(b.puts, 0, "nothing saved");
+    assert.equal(cf.alerts.length, 0);
+  }
+});
+
+test("r1#7: on a Monday with a full message the weekly line arrives whole, or waits whole for the next run", async () => {
+  // A fill found by search: the change line's kind is 4 characters and the echo refs 6, so the old code's lines
+  // reached the 900-character budget and the weekly line was appended past the 1,024-character cut.
+  const mon = START + 3 * 24 * H + 14 * H + 5 * M;
+  const weekly = (a: { message: string }) => /Cloudflare this week: .*open incidents?\.(\n|$)/.test(a.message);
+  const { b, cf, run } = setup([]);
+  await run(T0);
+  cf.log.push(shapes.systemDns("s", T0 + M), shapes.benDash("d", T0 + 2 * M), ev("l", T0 + 3 * M, { type: "update", ctx: "api", atype: "user", actor: BEN, product: "", rtype: "user", desc: "LOGIN" }), shapes.masterCreate("mk", T0 + 4 * M, "192.0.2.200"), shapes.echo("mke", T0 + 4 * M + 500, "TOKEN_CREATE", "192.0.2.200"));
+  for (let n = 0; n < 12; n++) cf.log.push(shapes.echo(`eeeee${n % 10}`, mon - H + n * 60_000, "TOKEN_CREATE", `192.0.2.${n + 1}`));
+  cf.log.push(ev("chg1", mon - H + 30 * M, { token: OTHER, product: "p".repeat(40), rtype: "tttt" }), ev("chg2", mon - H + 31 * M, { token: OTHER }));
+  await run(mon);
+  for (const a of cf.alerts) assert.ok(a.message.length <= 1024);
+  assert.ok(!cf.alerts.some((a) => /Cloudflare this week/.test(a.message) && !weekly(a)), "M:r1#7 never a cut weekly line");
+  if (!cf.alerts.some(weekly)) {
+    assert.ok(Object.keys(state(b).week.counts).length > 0, "counts kept until the line is sent whole");
+    await run(mon + H);
+  }
+  assert.equal(cf.alerts.filter(weekly).length, 1, "the weekly line arrives whole, once");
+  assert.deepEqual(state(b).week.counts, {});
+});
+
+test("r1 drift 10 (D1): a first run whose backlog spans runs sends one summary, not a replay", async () => {
+  const backlog = Array.from({ length: 250 }, (_, n) => ev(`f${n}`, T0 + n * 1000, { token: OTHER }));
+  const { b, cf, run } = setup(backlog);
+  await run(T0 + H);
+  await run(T0 + 2 * H);
+  assert.equal(cf.alerts.length, 1, "one push for the whole backlog");
+  assert.match(cf.alerts[0].message, /check started/, "M:D1 first-run summary");
+  assert.doesNotMatch(cf.alerts[0].message, /ref f\d/);
+  assert.equal(ids(b).filter((i: string) => i.startsWith("change:f")).length + state(b).dropped >= 250, true, "every backlog change listed or counted");
+  cf.log.push(ev("after", T0 + 3 * H, { token: OTHER }));
+  await run(T0 + 4 * H);
+  assert.match(cf.alerts.at(-1)!.message, /ref after/, "after catching up, changes alert normally");
+});
