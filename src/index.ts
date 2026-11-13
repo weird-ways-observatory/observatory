@@ -2,12 +2,14 @@
 // `scheduled` on each cron in wrangler.jsonc, routed here by `controller.cron` and nowhere else:
 // the nightly one runs the phase 2c backup copy (src/copy.ts) after the one-time alert delivery
 // test of phase 2b (src/alert.ts); the hourly one runs the freshness check (src/fresh.ts) and, as a
-// separate job, the phase 2a records check (src/records.ts); and
+// separate job, the phase 2a records check (src/records.ts); the :45 one runs the Cloudflare
+// outside-record check (src/cfaudit.ts, card beec640b); and
 // `fetch` only if an address is ever added by mistake -- it has none.
 import { runNight, type Env } from "./copy.ts";
 import { deliveryTest } from "./alert.ts";
 import { FRESH_CRON, runFresh, type FreshEnv } from "./fresh.ts";
 import { runRecords, type RecordsEnv } from "./records.ts";
+import { CFAUDIT_CRON, runCfAudit, type CfAuditEnv } from "./cfaudit.ts";
 
 export const NIGHT_CRON = "15 3 * * *";
 
@@ -30,6 +32,9 @@ export default {
       ctx.waitUntil(runFresh(env, send, now));
       return ctx.waitUntil(runRecords(env, send, now).catch(() => console.log(JSON.stringify({ records: "unverified", reason: "records check threw" }))));
     }
+    if (controller.cron === CFAUDIT_CRON) {
+      return ctx.waitUntil(runCfAudit(env, send, now).catch(() => console.log(JSON.stringify({ cfaudit: "did not finish", reason: "the Cloudflare check threw" }))));
+    }
     if (controller.cron !== NIGHT_CRON) return console.log(JSON.stringify({ unknownCron: controller.cron }));
     ctx.waitUntil((async () => {
       // A broken test must never stop the night's copy.
@@ -38,4 +43,4 @@ export default {
       await runNight(env, { fetch: send, sized }, now);
     })());
   },
-} satisfies ExportedHandler<Env & FreshEnv & RecordsEnv>;
+} satisfies ExportedHandler<Env & FreshEnv & RecordsEnv & CfAuditEnv>;
