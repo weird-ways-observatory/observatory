@@ -2092,6 +2092,19 @@
         "name": "r1#4: valid JSON with corrupt nested fields is rebuilt, never reloaded"
       },
       "expect": "M:r1#4"
+    },
+    {
+      "id": "r2-unpaired-first",
+      "row": "A10",
+      "file": "src/cfaudit.ts",
+      "find": ".sort((a, b) => Number(lonely(b)) - Number(lonely(a)));",
+      "replace": ";",
+      "why": "beec640b build a-2 (provisional, Ben to confirm): unpaired echoes get their own lines before paired ones are counted",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "r2 (provisional, Ben to confirm): in an overflowing push, unpaired echoes get their own lines before paired ones are counted"
+      },
+      "expect": "M:r2 unpaired"
     }
   ],
   "retired": []

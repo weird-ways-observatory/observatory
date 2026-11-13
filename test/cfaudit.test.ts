@@ -588,7 +588,7 @@ test("r1#2: 32 unpaired echoes in one run all reach Ben in that run's one push; 
   assert.ok(echoes.every((i: any) => i.told), "M:r1#2 every echo told in its own run");
   assert.equal(cf.alerts.length, 1);
   assert.ok(cf.alerts[0].message.length <= 1024);
-  assert.match(cf.alerts[0].message, /and \d+ more: \d+ key echoes?; ask an agent to read the list/);
+  assert.match(cf.alerts[0].message, /and \d+ more: \d+ unpaired key echoes?; ask an agent to read the list/);
 });
 
 test("r1#3: malformed actor fields alert -- a master write with no actor type, a non-string sign-in on a system kind", () => {
@@ -678,4 +678,17 @@ test("r1 drift 10 (D1): a first run whose backlog spans runs sends one summary, 
   cf.log.push(ev("after", T0 + 3 * H, { token: OTHER }));
   await run(T0 + 4 * H);
   assert.match(cf.alerts.at(-1)!.message, /ref after/, "after catching up, changes alert normally");
+});
+
+test("r2 (provisional, Ben to confirm): in an overflowing push, unpaired echoes get their own lines before paired ones are counted", async () => {
+  const { b, cf, run } = setup([]);
+  await run(T0);
+  // 30 paired echoes (each with its key event), then 2 unpaired ones later in the hour.
+  for (let n = 0; n < 30; n++) cf.log.push(shapes.masterCreate(`key${String(n).padStart(4, "0")}`, T0 + M + n * 30_000, `192.0.2.${n + 1}`), shapes.echo(`pair${String(n).padStart(4, "0")}`, T0 + M + n * 30_000 + 500, "TOKEN_CREATE", `192.0.2.${n + 1}`));
+  cf.log.push(shapes.echo("lonely01", T0 + 30 * M, "TOKEN_CREATE", "198.51.100.1"), shapes.echo("lonely02", T0 + 31 * M, "TOKEN_CREATE", "198.51.100.2"));
+  await run(T0 + H);
+  const msg = cf.alerts.at(-1)!.message;
+  for (const r of ["lonely01", "lonely02"]) assert.match(msg, new RegExp(`ref ${r}`), `M:r2 unpaired ${r} named`);
+  assert.match(msg, /\d+ paired key echoes/);
+  assert.ok(state(b).incidents.filter((i: any) => i.id.startsWith("echo:")).every((i: any) => i.told));
 });

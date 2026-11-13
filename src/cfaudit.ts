@@ -58,14 +58,16 @@ interface State {
 
 const iso = (t: number) => new Date(t).toISOString();
 const ref = (id: string) => id.replace(/[^A-Za-z0-9]/g, "").slice(0, 8) || "none";
+/** An echo with no key event to explain it: the riskier kind, so it gets its own line before paired ones (provisional, Ben to confirm). */
+const lonely = (i: Incident) => i.id.startsWith("echo:") && i.text.includes("logged only as an echo");
 const KIND: Record<string, [string, string]> = {
-  echo: ["key echo", "key echoes"], noecho: ["key event without an echo", "key events without an echo"],
+  echo: ["paired key echo", "paired key echoes"], lonely: ["unpaired key echo", "unpaired key echoes"], noecho: ["key event without an echo", "key events without an echo"],
   fresh: ["freshness line", "freshness lines"], rebuilt: ["rebuild line", "rebuild lines"], first: ["start line", "start lines"],
 };
 /** One line counting the incidents that did not fit in a push, by kind: they are on the list, told by this line. */
-export function closing(xs: { id: string }[]) {
+export function closing(xs: Incident[]) {
   const by = new Map<string, number>();
-  for (const x of xs) { const k = x.id.split(":")[0]; by.set(k, (by.get(k) ?? 0) + 1); }
+  for (const x of xs) { const k = lonely(x) ? "lonely" : x.id.split(":")[0]; by.set(k, (by.get(k) ?? 0) + 1); }
   const kinds = [...by].map(([k, n]) => { const [one, many] = KIND[k] ?? ["other line", "other lines"]; return `${n} ${n === 1 ? one : many}`; });
   return `and ${xs.length} more: ${kinds.join(", ")}; ask an agent to read the list`;
 }
@@ -363,7 +365,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     lines.push(`${changes[0].text.slice(0, 400)}${changes.length > 1 ? ` (and ${changes.length - 1} more)` : ""}. Ask an agent to look up the ref.`);
     sent.push(...changes);
   }
-  const rest = untold.filter((x) => !x.id.startsWith("change:"));
+  const rest = untold.filter((x) => !x.id.startsWith("change:")).sort((a, b) => Number(lonely(b)) - Number(lonely(a)));
   for (let n = 0; n < rest.length; n++) {
     const line = rest[n].text.slice(0, 300), after = rest.slice(n + 1);
     if (fits(after.length ? [line, closing(after)] : [line])) { lines.push(line); sent.push(rest[n]); continue; }
