@@ -680,7 +680,7 @@ test("r1 drift 10 (D1): a first run whose backlog spans runs sends one summary, 
   assert.match(cf.alerts.at(-1)!.message, /ref after/, "after catching up, changes alert normally");
 });
 
-test("r2 (provisional, Ben to confirm): in an overflowing push, unpaired echoes get their own lines before paired ones are counted", async () => {
+test("r2 (Ben a4ef945a A): in an overflowing push, unpaired echoes get their own lines before paired ones are counted", async () => {
   const { b, cf, run } = setup([]);
   await run(T0);
   // 30 paired echoes (each with its key event), then 2 unpaired ones later in the hour.

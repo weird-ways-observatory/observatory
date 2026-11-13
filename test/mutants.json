@@ -2099,10 +2099,10 @@
       "file": "src/cfaudit.ts",
       "find": ".sort((a, b) => Number(lonely(b)) - Number(lonely(a)));",
       "replace": ";",
-      "why": "beec640b build a-2 (provisional, Ben to confirm): unpaired echoes get their own lines before paired ones are counted",
+      "why": "beec640b build a-2 (Ben a4ef945a A): unpaired echoes get their own lines before paired ones are counted",
       "test": {
         "file": "test/cfaudit.test.ts",
-        "name": "r2 (provisional, Ben to confirm): in an overflowing push, unpaired echoes get their own lines before paired ones are counted"
+        "name": "r2 (Ben a4ef945a A): in an overflowing push, unpaired echoes get their own lines before paired ones are counted"
       },
       "expect": "M:r2 unpaired"
     }

@@ -58,7 +58,7 @@ interface State {
 
 const iso = (t: number) => new Date(t).toISOString();
 const ref = (id: string) => id.replace(/[^A-Za-z0-9]/g, "").slice(0, 8) || "none";
-/** An echo with no key event to explain it: the riskier kind, so it gets its own line before paired ones (provisional, Ben to confirm). */
+/** An echo with no key event to explain it: the riskier kind, so it gets its own line before paired ones (Ben, a4ef945a A, 2026-11-13). */
 const lonely = (i: Incident) => i.id.startsWith("echo:") && i.text.includes("logged only as an echo");
 const KIND: Record<string, [string, string]> = {
   echo: ["paired key echo", "paired key echoes"], lonely: ["unpaired key echo", "unpaired key echoes"], noecho: ["key event without an echo", "key events without an echo"],
