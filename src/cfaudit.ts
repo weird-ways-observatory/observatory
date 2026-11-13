@@ -199,7 +199,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   if (loaded.rebuilt) add(`rebuilt:${T}`, `the Cloudflare check's saved state was unreadable and was rebuilt from ${iso(start).slice(0, 10)}: changes found while it catches up are on the list, sent only as this line`);
   const reds: string[] = [];
   // Build b: the matcher reads effects and epochs, and re-reads what build a judged without it (13.2).
-  const mx = await matcher(env.COPY, who, s, T, (id, text) => add(id, text), (re) => [...incidents.keys()].some((k) => re.test(k)));
+  const mx = await matcher(env.COPY, who, s, T, (id, text) => add(id, text));
   /**
    * Writes the incident map into the state, worst first, at most MAX_INCIDENTS with one counted overflow line.
    * Run before every save, so a save never holds a bookmark without the incidents read up to it. Idempotent:
@@ -331,18 +331,20 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
   // 4. Echo pairing settles once everything within 5 s of an event has been read. Every echo pushes
   //    (Ben, c79e2293 A); the pair only labels it. A key event with no echo is a diagnostic line.
   const through = ended ? before : s.bm.t;
+  await mx.finish(through, counts);
+  report.matching = mx.status();
+  // An echo waits while its master key event is still being matched; it says "approved by your tap" only once matched.
+  const tap = (r: Recent) => (r.p ? mx.state(r.p) : undefined);
   const keep: Recent[] = [];
   recent.sort((a, b) => a.t - b.t);
   const over = Math.max(0, recent.length - MAX_RECENT);
   recent.forEach((r, n) => {
-    if (r.t + PAIR_MS >= through && n >= over) return void keep.push(r);
+    if ((r.t + PAIR_MS >= through || (r.k === "echo" && tap(r) === "")) && n >= over) return void keep.push(r);
     const told = s.rebuiltAt !== undefined && r.t < s.rebuiltAt;
-    if (r.k === "echo") add(`echo:${r.id}`, r.p ? `a key ${r.a} echo at ${iso(r.t)}, ref ${ref(r.id)}: probably the log's duplicate entry of the key ${r.a} at ${iso(r.pt!)} (ref ${ref(r.p)})` : `a key ${r.a} logged only as an echo at ${iso(r.t)}, ref ${ref(r.id)}: no matching key event`, told);
+    if (r.k === "echo") add(`echo:${r.id}`, r.p ? `a key ${r.a} echo at ${iso(r.t)}, ref ${ref(r.id)}: probably the log's duplicate entry of the key ${r.a} at ${iso(r.pt!)} (ref ${ref(r.p)})${tap(r) ? `, approved by your tap ${tap(r)!.slice(0, 8)}` : ""}` : `a key ${r.a} logged only as an echo at ${iso(r.t)}, ref ${ref(r.id)}: no matching key event`, told);
     else if (!r.p) add(`noecho:${r.id}`, `a key ${r.a} at ${iso(r.t)}, ref ${ref(r.id)}, has no echo in the log (diagnostic)`, told);
   });
   s.recent = keep;
-  await mx.finish(through, counts);
-  report.matching = mx.status();
   if (ended && s.rebuiltAt !== undefined) delete s.rebuiltAt;
 
   // 5. Lag against the accepted capacity; ties cleared once the bookmark moves past them.

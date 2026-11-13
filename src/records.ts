@@ -331,7 +331,9 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     // or after the floor: matching's checkpoint or oldest waiting event (else the last epoch) less a grant's life.
     if (env.RECORDS && ((seq > 0 && !(pe.grants && typeof pe.grants === "object")) || (Number.isInteger(ca?.gen) && fx.gen < ca.gen))) {
       const last = await env.COPY.get(EPOCHS_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.epochs?.at(-1)?.boundary : undefined));
-      const at = Number.isFinite(ca?.t) ? Math.min(ca.t, ...(Array.isArray(ca.pend) ? ca.pend.map((x: { t: number }) => x.t).filter(Number.isFinite) : [])) : last;
+      // Every outstanding obligation: the checkpoint, an unfinished replay, waiting, late and not-yet-indexed matched events.
+      const owed = [ca?.t, ca?.rp?.s, ...[ca?.pend, ca?.late, ca?.expl?.filter((x: { i?: 1 }) => !x.i)].flatMap((l) => (Array.isArray(l) ? l.map((x: { t: number }) => x.t) : []))].filter(Number.isFinite);
+      const at = Number.isFinite(ca?.t) ? Math.min(...owed) : last;
       if (Number.isFinite(at)) Object.assign(fx, { gen: Math.max(fx.gen, num(ca?.gen, 0)), since: at - GRANT_TTL_MS - 3_600_000, covered_to: 0, grants: bare<Effect>({}), retired: bare<number>({}), index: bare<string>({}), revoked: bare<string>({}), replay_from: await firstAt(env.RECORDS, seq + 1, at - GRANT_TTL_MS - SKEW_MS) });
     }
   } catch {
@@ -548,7 +550,8 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     const done = new Set(Array.isArray(ca?.done) ? ca.done : []);
     for (const [g, e] of Object.entries(fx.grants)) if (now.getTime() - (e.res?.at ?? (e.req?.at ?? 0) + GRANT_TTL_MS) > EFFECTS_KEEP_MS && done.has(g)) delete fx.grants[g], (fx.retired[g] = now.getTime());
     for (const [n, g] of Object.entries(fx.index)) if (!Object.hasOwn(fx.grants, g) && !(now.getTime() - (fx.retired[g] ?? -Infinity) <= INDEX_KEEP_MS)) delete fx.index[n];
-    for (const n of Object.keys(fx.revoked)) if (!Object.hasOwn(fx.index, n) && !standing.has(n)) delete fx.revoked[n];
+    // A number cfaudit has not confirmed handling (m.rj) is kept, raised again or not; once confirmed, kept only while it stands.
+    for (const n of Object.keys(fx.revoked)) if (!Object.hasOwn(fx.index, n) && !standing.has(n) && (Array.isArray(ca?.rj) && ca.rj.includes(n))) delete fx.revoked[n];
     for (const [g, t] of Object.entries(fx.retired)) if (now.getTime() - t > INDEX_KEEP_MS) delete fx.retired[g];
   } catch {
     fxErr ??= "the effects list could not be updated after the read";

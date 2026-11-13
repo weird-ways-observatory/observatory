@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { runCfAudit, STATE_KEY, SETTLE_MS } from "../src/cfaudit.ts";
 import { EPOCHS_KEY, MAX_PENDING, REPLAY_RUNS, RESULT_WAIT_MS, WARM_MS } from "../src/cfmatch.ts";
 import { b64, GRANT_TTL_MS, keyFor, sealed, sha256, type Envelope, type Stage } from "../src/contract.ts";
-import { CF_FROM } from "../src/card.ts";
+import { CARD_RUN_MS, cardHashOf, CF_FROM, type Manifest } from "../src/card.ts";
+import { softKey } from "./softkey.ts";
 import { runRecords, STATE_KEY as RECORDS_KEY, type Pin, type RecordsEnv } from "../src/records.ts";
 import { grantHashOf } from "../src/recorder/passkey.ts";
 import { bucket, cloudflare, env, MASTER, shapes, state } from "./cfaudit-fakes.ts";
@@ -21,9 +22,11 @@ const id = (n: number) => n.toString(16).padStart(32, "0");
 type Ev = Record<string, any>;
 
 /** A master create naming its new key as Cloudflare does (resource.response.id), with name and expiry. */
-function mc(eid: string, t: number, key: string, o: { name?: string; exp?: number | null; result?: string } = {}): Ev {
+/** `pg`: the permission group names on the new key (claim: Cloudflare's create response shape, policies[].permission_groups[].name). */
+function mc(eid: string, t: number, key: string, o: { name?: string; exp?: number | null; result?: string; pg?: string[] } = {}): Ev {
   const e = shapes.masterCreate(eid, t);
-  e.resource.response = { id: key, name: o.name ?? "front-desk probe x", ...(o.exp === null ? {} : { expires_on: new Date(o.exp ?? t + 5 * MIN).toISOString() }) };
+  const pg = o.pg ?? ((o.name ?? "").startsWith("front-desk headcount") ? ["Account API Tokens Read"] : ["Zone Read"]);
+  e.resource.response = { id: key, name: o.name ?? "front-desk probe x", policies: [{ effect: "allow", permission_groups: pg.map((name) => ({ id: "f".repeat(32), name })) }], ...(o.exp === null ? {} : { expires_on: new Date(o.exp ?? t + 5 * MIN).toISOString() }) };
   if (o.result) e.action.result = o.result;
   return e;
 }
@@ -69,13 +72,13 @@ test("row 1: an honest trace per job is matched with no unmatched alert and a cl
   const w = world({
     "aaaaaaaa-dns": grant("cf.dns.list", T, { made: [id(1), id(2)], deleted: [id(1), id(2)] }, { path: "card" }),
     "bbbbbbbb-aud": grant("cf.audit.read", T + 10 * MIN, { made: [id(3)], deleted: [id(3), id(9)] }),
-    "cccccccc-acc": grant("cf.token.accept", T + 20 * MIN, { made: [], deleted: [id(10), id(11)] }),
+    "cccccccc-acc": grant("cf.token.accept", T + 20 * MIN, { made: [], deleted: [id(10)] }),
     "dddddddd-hc": grant("cf.token.headcount.setup", T + 30 * MIN, { made: [hcNew], deleted: [hcOld] }),
     "eeeeeeee-zon": grant("cf.zone.read", T + 40 * MIN, { made: [id(4), id(5)], deleted: [id(4), id(5)] }),
   });
   add(w, mc("e1", T + 10_000, id(1)), md("e2", T + 11_000, id(1)), mc("e3", T + 12_000, id(2)), md("e4", T + 13_000, id(2)));
-  add(w, mc("e5", T + 10 * MIN + 10_000, id(3)), md("e6", T + 10 * MIN + 11_000, id(3)), md("e7", T + 10 * MIN + 12_000, id(9)));
-  add(w, md("e8", T + 20 * MIN + 10_000, id(10)), md("e9", T + 20 * MIN + 11_000, id(11)));
+  add(w, mc("e5", T + 10 * MIN + 10_000, id(3), { pg: ["Account Settings Read"] }), md("e6", T + 10 * MIN + 11_000, id(3)), md("e7", T + 10 * MIN + 12_000, id(9)));
+  add(w, md("e8", T + 20 * MIN + 10_000, id(10)));
   add(w, mc("e10", T + 30 * MIN + 10_000, hcNew, { name: "front-desk headcount 2026", exp: null }), md("e11", T + 30 * MIN + 12_000, hcOld));
   add(w, mc("e12", T + 40 * MIN + 10_000, id(4)), md("e13", T + 40 * MIN + 11_000, id(4)), mc("e14", T + 40 * MIN + 12_000, id(5)), md("e15", T + 40 * MIN + 13_000, id(5)));
   add(w, hcRead("r1", T + 50 * MIN, hcNew));
@@ -83,9 +86,10 @@ test("row 1: an honest trace per job is matched with no unmatched alert and a cl
   assert.equal(r.cfaudit, "ran", String(r.reason));
   assert.deepEqual(w.has("change:").map((i) => i.id), [], "an honest master write alerted as unmatched");
   assert.deepEqual(w.has("reverse:"), [], "the reverse check flagged an honest tap");
-  assert.equal(w.m().expl.length, 15, "not every honest master write was matched");
+  assert.equal(w.m().expl.length, 14, "not every honest master write was matched");
   assert.equal(w.m().pend.length, 0, "an honest write is still pending");
   assert.equal(w.m().t, state(w.b).bm.t, "the matching checkpoint did not move with the bookmark");
+  assert.deepEqual(w.m().ids, state(w.b).bm.ids, "the matching checkpoint's ids did not move with the bookmark");
 });
 
 test("row 2: a create and a delete no tap names alert once coverage passes; held before", async () => {
@@ -98,8 +102,10 @@ test("row 2: a create and a delete no tap names alert once coverage passes; held
   assert.deepEqual(w.has("change:").map((i) => i.id).sort(), ["change:x1", "change:x2"], "an unnamed create or delete did not alert");
   assert.match(w.has("change:x1")[0].text, /master key that no approved tap names/, "the alert does not say what it is");
   assert.doesNotMatch(w.has("change:x1")[0].text, new RegExp(id(1)), "the alert names the key");
-  await w.run(T + 80 * H);
-  assert.equal(w.m().late.length, 0, "alerted events were kept for late results past 72 h");
+  await w.run(T + 90 * H);
+  assert.equal(w.m().late.length, 2, "alerted events were dropped by elapsed time, before records' coverage passed their grants' life");
+  await w.run(T + 100 * H);
+  assert.equal(w.m().late.length, 0, "alerted events were kept after records' coverage passed their grants' life and margin");
 });
 
 test("row 2: a master-key update alerts at once", async () => {
@@ -140,16 +146,16 @@ test("row 5: creates over the job's count alert (two for audit.read, any for acc
     "aaaaaaaa-1": grant("cf.audit.read", T, { made: [id(1), id(2)], deleted: [] }),
     "bbbbbbbb-2": grant("cf.token.accept", T, { made: [id(3)], deleted: [] }),
   });
-  add(w, mc("c1", T + 10_000, id(1)), mc("c2", T + 11_000, id(2)), mc("c3", T + 12_000, id(3)));
+  add(w, mc("c1", T + 10_000, id(1), { pg: ["Account Settings Read"] }), mc("c2", T + 11_000, id(2), { pg: ["Account Settings Read"] }), mc("c3", T + 12_000, id(3)));
   await w.run(T + H);
   assert.deepEqual(w.has("change:").map((i) => i.id).sort(), ["change:c2", "change:c3"], "a create over the job's count matched");
 });
 
 test("row 5: deletes over the job's count alert", async () => {
-  const w = world({ "aaaaaaaa-1": grant("cf.token.accept", T, { made: [], deleted: [id(1), id(2), id(3)] }) });
-  add(w, md("k1", T + 10_000, id(1)), md("k2", T + 11_000, id(2)), md("k3", T + 12_000, id(3)));
+  const w = world({ "aaaaaaaa-1": grant("cf.token.accept", T, { made: [], deleted: [id(1), id(2)] }) });
+  add(w, md("k1", T + 10_000, id(1)), md("k2", T + 11_000, id(2)));
   await w.run(T + H);
-  assert.deepEqual(w.has("change:").map((i) => i.id), ["change:k3"], "a delete over the job's count matched");
+  assert.deepEqual(w.has("change:").map((i) => i.id), ["change:k2"], "a delete over the job's count matched");
 });
 
 test("row 6: a create whose name, expiry or kind does not fit its job alerts", async () => {
@@ -429,17 +435,17 @@ test("security c: a replay still unfinished after REPLAY_RUNS runs turns the lig
   assert.match(String(r.reason), /replay/, "the red reason does not name the replay");
 });
 
-test("row 28: a replay range Cloudflare no longer returns raises evidence unavailable; matching stays incomplete", async () => {
+test("row 28 (#10): a replay answer that is not a clean page keeps the range; matching stays incomplete and red, never lost by inference", async () => {
   const w = world();
   add(w, mc("y1", T, id(1)));
   await w.run(T + 30 * MIN, 0);
-  const s = state(w.b);
-  s.bm = { t: T + 3 * H, ids: [] };
-  w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "builda" });
+  revert(w, T + 3 * H);
   w.cf.fail["/logs/audit"] = () => Response.json({ success: false }, { status: 400 });
   const r = await w.run(T + 4 * H);
-  assert.equal(w.has("unavailable:").length, 1, "unreadable evidence was not named");
-  assert.equal(r.matching, "incomplete", "matching reported clean over unavailable evidence");
+  assert.ok(w.m().rp, "an unclean replay answer deleted the replay range");
+  assert.equal(r.matching, "incomplete", "matching reported clean over an unread range");
+  assert.equal(r.cfaudit, "did not finish", "an unread replay range left the light green");
+  assert.equal(w.has("gap:").length, 0, "the gap was closed over an unread range");
 });
 
 // ---- production path: signed records through runRecords, then runCfAudit ----
@@ -473,12 +479,18 @@ async function signedWorld() {
     recs.store.set(keyFor(n, grant, stage), { body: JSON.stringify({ ...e, sig: b64(await crypto.subtle.sign("Ed25519", pair.privateKey, sealed(e))) }), uploaded: new Date(t) });
     return { n, sha };
   };
-  const tap = async (grant: string, job: string, t: number, cf: unknown) => {
-    const f = { v: 1 as const, grant, stage: "request" as const, job, params: {}, requester: "c-box agent", expires_at: t + 10 * MIN };
-    const req = await put(grant, "request", { ...f, grant_hash: (await grantHashOf(f))! }, t);
-    const appr = await put(grant, "approval", { job, request: req.sha }, t + MIN);
+  const key = await softKey();
+  /** A whole tap, as effects.test.ts records it: `card` gives a real card/v1 approval; `verdict` adds a verdict record. */
+  const tap = async (grant: string, job: string, t: number, cf: unknown, o: { card?: boolean; verdict?: boolean } = {}) => {
+    const f = { v: 1 as const, grant, stage: "request" as const, job, params: {}, requester: "c-box agent", expires_at: t + 10 * MIN, ...(o.card ? { card: `card-${grant}` } : {}) };
+    const hash = (await grantHashOf(f))!;
+    const req = await put(grant, "request", { ...f, grant_hash: hash }, t);
+    const mf: Manifest = { kind: "card/v1", card: `card-${grant}`, requester: "c-box agent", entries: [hash], deadline: t + 10 * MIN + CARD_RUN_MS, jobs_version: 1 };
+    const cardMark = o.card ? { grant_hash: hash, approval_kind: "card/v1", manifest: mf, assertion: await key.answer(await cardHashOf(mf)) } : {};
+    const appr = await put(grant, "approval", { job, request: req.sha, ...cardMark }, t + MIN);
+    const vd = o.verdict ? await put(grant, "verdict", { job, request: req.sha }, t + MIN + 30_000) : undefined;
     const res = await put(grant, "result", { job, request: req.sha, outcome: "done", cf }, t + 2 * MIN);
-    return { req: req.n, appr: appr.n, res: res.n };
+    return { req: req.n, appr: appr.n, res: res.n, vd: vd?.n };
   };
   const renv = { RECORDS: recs, COPY: b } as unknown as RecordsEnv;
   const records = (t: number) => runRecords(renv, async () => new Response("", { status: 500 }), new Date(t), pin, undefined, CF_FROM);
@@ -565,6 +577,8 @@ test("row 22: end to end, a records finding 32 days after retirement on a retire
   assert.deepEqual(w.inc().filter((i) => i.id.startsWith("unexplained-after:")).map((i) => i.id).sort(), ["unexplained-after:j1", "unexplained-after:j2"], "a retired tap's events were not re-judged once at 32 days");
   assert.equal(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.index[String(s.res)], undefined, "test setup: the records index still held the record");
   assert.ok(state(w.b).m.rj.includes(String(s.res)), "the re-judged record was not remembered, so it would be re-judged again");
+  await w.records(late + 90 * MIN);
+  assert.ok(Object.hasOwn(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.revoked, String(s.res)), "a confirmed number that is still raised was dropped, so it would be re-judged again");
 });
 
 test("row 22: a tap is acknowledged done only once its index entry landed", async () => {
@@ -612,7 +626,7 @@ test("12.5: the rebuild starts at the first record at or after the floor, not at
   const w = await signedWorld();
   const t0 = Math.floor(CF_FROM / H) * H + H;
   await w.crons(t0, t0 + H);
-  for (let i = 0; i < 6; i++) await w.tap(`5ca1ab1e-0000-4000-8000-00000000010${i}`, "cf.dns.list", t0 + H + i * MIN, "unknown");
+  for (let i = 0; i < 6; i++) await w.tap(`5ca1ab1e-0000-4000-8000-00000000010${i}`, "cf.dns.list", t0 + 3 * H + i * MIN, "unknown");
   const on = since(w) + WARM_MS, after = "5ca1ab1e-0000-4000-8000-000000000199";
   await w.crons(t0 + H, on + 20 * H);
   await w.tap(after, "cf.dns.list", on + 20 * H + 5 * MIN, "unknown");
@@ -660,4 +674,297 @@ test("12.5: effects and matching state both lost: records rebuilds from the last
   await w.records(on + 3 * H + 30 * MIN);
   const fx = JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects;
   assert.ok(fx.grants[g] && fx.since === on - GRANT_TTL_MS - H, "lost effects with no matching state were not rebuilt from the last epoch");
+});
+
+// ---- Codex build r1 (#1-#15) and security review S1-S3 ----
+
+test("#1: a create whose permission groups do not fit the job, or cannot be read, is not explained", async () => {
+  const w = world({ "aaaaaaaa-1": grant("cf.dns.list", T, { made: [id(1), id(2)], deleted: [] }), "bbbbbbbb-2": grant("cf.zone.read", T, { made: [id(3)], deleted: [] }) });
+  const noPolicies = mc("pg2", T + 11_000, id(2)); delete noPolicies.resource.response.policies;
+  const empty = mc("pg4", T + 13_000, id(4)); empty.resource.response.policies = [];
+  (w.fx.grants as any)["cccccccc-4"] = grant("cf.zone.read", T, { made: [id(4)], deleted: [] });
+  add(w, mc("pg1", T + 10_000, id(1), { pg: ["Zone Read", "DNS Write"] }), noPolicies, mc("pg3", T + 12_000, id(3), { pg: ["DNS Read"] }), empty);
+  await w.run(T + H);
+  assert.deepEqual(w.has("change:").map((i) => i.id).sort(), ["change:pg1", "change:pg2", "change:pg3", "change:pg4"], "a key with the wrong or unreadable permissions matched");
+  assert.match(w.has("change:pg1")[0].text, /permissions/, "the alert does not say the permissions are wrong");
+});
+
+test("#3: build a extending the bookmark at the same instant is a recovery; the event is judged", async () => {
+  const w = world();
+  add(w, mc("i1", T, id(1)));
+  await w.run(T + 30 * MIN, 0);
+  add(w, mc("i2", T, id(2))); // build a reads it at the same millisecond
+  const s = state(w.b);
+  s.bm = { t: s.bm.t, ids: [...s.bm.ids, "i2"] };
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "builda-tie" });
+  await w.run(T + 2 * H);
+  assert.ok(w.has("change:i2").length || w.m().pend.some((e: any) => e.id === "i2"), "a write build a read at the checkpoint's instant was never judged");
+});
+
+test("#4: an activated matching state without its boundary is a recovery, not pre-activation forever", async () => {
+  const w = world();
+  await w.run(T, 0);
+  const s = state(w.b);
+  delete s.m.from;
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "corrupt" });
+  add(w, mc("cf1", T + 10 * MIN, id(1)));
+  await w.run(T + H);
+  await w.run(T + 2 * H);
+  assert.equal(w.has("change:cf1").length, 1, "a write after a corrupt matching state was counted as before activation");
+});
+
+test("#4: lost matching state replays from the first epoch, where unresolved work may start", async () => {
+  const w = world();
+  w.b.store.set(EPOCHS_KEY, { body: JSON.stringify({ epochs: [{ n: 1, boundary: ON }, { n: 2, boundary: T + H }] }), etag: "ep" });
+  add(w, mc("fe1", T, id(1)));
+  w.b.store.set(STATE_KEY, { body: JSON.stringify({ v: 1, bm: { t: T + 2 * H, ids: [] }, recent: [], incidents: [], dropped: 0, week: { counts: {}, lag: 0 } }), etag: "lost" });
+  await w.run(T + 3 * H);
+  await w.run(T + 4 * H);
+  assert.equal(w.has("change:fe1").length, 1, "an event before the latest epoch was not judged after matching state was lost");
+});
+
+test("#4: an unreadable activation record explains nothing and is raised", async () => {
+  const w = world({ "aaaaaaaa-1": grant("cf.dns.list", T, { made: [id(1)], deleted: [] }) });
+  await w.run(T);
+  w.b.store.set(EPOCHS_KEY, { body: JSON.stringify({ epochs: "x" }), etag: "bad" });
+  add(w, mc("ur1", T + 10_000, id(1)));
+  await w.run(T + H);
+  assert.equal(w.m().expl.length, 0, "an event was matched while the activation record was unreadable");
+  assert.equal(w.has("effects:").length, 1, "an unreadable activation record was not raised");
+});
+
+test("#6: an unfinished replay never judges absence or acknowledges a tap it has not read", async () => {
+  const w = world({ "aaaaaaaa-6": grant("cf.dns.list", T + 2 * H, { made: [id(1)], deleted: [id(1)] }) });
+  await w.run(T, 0);
+  views(w, T + MIN, 700);
+  add(w, mc("u61", T + 2 * H + 10_000, id(1)), md("u62", T + 2 * H + 11_000, id(1)));
+  revert(w, T + 3 * H);
+  await w.run(T + 4 * H);
+  assert.ok(w.m().rp, "test setup: the replay finished in one run");
+  assert.equal(w.has("reverse:").length, 0, "the reverse check judged events the replay had not read yet");
+  assert.ok(!w.m().done.includes("aaaaaaaa-6"), "a tap was acknowledged before the replay read its events");
+  await w.run(T + 5 * H);
+  await w.run(T + 6 * H);
+  assert.equal(w.has("reverse:").length, 0, "the honest tap failed the reverse check after the replay");
+  assert.ok(w.m().done.includes("aaaaaaaa-6"), "the honest tap was not acknowledged once the replay read it");
+});
+
+test("#7: a lookup of a revoked record has no age cap, and an unreadable index keeps matching incomplete", async () => {
+  const w = world();
+  await w.run(T, 0);
+  w.b.store.set("state/cfindex/by-record.json", { body: JSON.stringify({ "41": { g: "old-tap-1", mo: ["2023-01"] }, "42": { g: "old-tap-2", mo: ["2023-02"] } }), etag: "br" });
+  w.b.store.set("state/cfindex/2023-01.json", { body: JSON.stringify({ "old-tap-1": [{ id: "anc1", a: "create", k: id(1), t: T - 1000 * 86_400_000, ok: true, ep: 1, g: "old-tap-1", i: 1 }] }), etag: "m1" });
+  w.fx.revoked["41"] = "";
+  w.fx.revoked["42"] = ""; // its month file is gone: unreadable
+  const r = await w.run(T + H);
+  assert.equal(w.has("unexplained-after:anc1").length, 1, "an association older than any cap was not re-judged");
+  assert.ok(!w.m().rj.includes("42"), "an unreadable index entry was marked handled");
+  assert.equal(r.matching, "incomplete", "an unreadable index entry left matching reported complete");
+});
+
+test("#7/S1: acknowledging a tap writes every record number of its chain, verdicts and taps with no matched event included", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS, t = Math.floor(on / H) * H + 2 * H + 5 * MIN;
+  const a = await w.tap("5ca1ab1e-0000-4000-8000-0000000007a1", "cf.dns.list", t, { made: [id(1)], deleted: [id(1)] }, { verdict: true });
+  const u = await w.tap("5ca1ab1e-0000-4000-8000-0000000007a2", "cf.zone.read", t + 10 * MIN, "unknown");
+  w.log.push(mc("v71", t + MIN + 1000, id(1)), md("v72", t + MIN + 2000, id(1)));
+  await w.crons(t0 + H, t + 4 * H);
+  const br = JSON.parse(w.b.store.get("state/cfindex/by-record.json")?.body ?? "{}");
+  for (const n of [a.req, a.appr, a.vd!, a.res, u.req, u.appr, u.res]) assert.ok(br[String(n)], `record ${n} of an acknowledged tap is not in the index`);
+});
+
+test("S1/S2: a revoked number the complete index never names re-judges nothing quietly; a named one not in the index is raised", async () => {
+  const w = world();
+  await w.run(T, 0);
+  w.fx.revoked["77"] = "";
+  w.fx.revoked["78"] = "some-tap";
+  const r = await w.run(T + H);
+  assert.ok(w.m().rj.includes("77"), "a number proven never matched was not settled");
+  assert.equal(w.has("unavailable:record:78").length, 1, "a number records named as a tap's but missing from the index was not raised");
+  assert.equal(r.matching, "incomplete", "a missing index entry for a named record left matching complete");
+});
+
+test("#8: the headcount key is re-checked every run: 48 h without a read raises it", async () => {
+  const inst = id(21);
+  const w = world({ "bbbbbbbb-hc": grant("cf.token.headcount.setup", T, { made: [inst], deleted: [] }) });
+  add(w, mc("hh1", T + 10_000, inst, { name: "front-desk headcount a", exp: null }), hcRead("hr1", T + 25 * H, inst));
+  await w.run(T + 26 * H);
+  assert.equal(w.has("outlived:").length, 0, "test setup: the read key was flagged");
+  await w.run(T + 80 * H);
+  assert.equal(w.has("outlived:hh1").length, 1, "a headcount key not read for 48 h stayed exempt");
+});
+
+test("#8: a failed candidate's setup probe never displaces the installed key as newest", async () => {
+  const inst = id(22), cand = id(23);
+  const w = world({ "bbbbbbbb-hc": grant("cf.token.headcount.setup", T, { made: [inst], deleted: [] }), "cccccccc-hc": grant("cf.token.headcount.setup", T + 30 * H, { made: [cand], deleted: [] }) });
+  add(w, mc("hn1", T + 10_000, inst, { name: "front-desk headcount a", exp: null }), hcRead("hn2", T + 29 * H, inst));
+  add(w, mc("hn3", T + 30 * H + 10_000, cand, { name: "front-desk headcount b", exp: null }), hcRead("hn4", T + 30 * H + 20_000, cand));
+  await w.run(T + 31 * H);
+  assert.equal(w.has("outlived:hn1").length, 0, "a failed candidate's setup probe displaced the installed key");
+});
+
+test("#8: an unconfirmed candidate past 48 h is raised but stays pending (still watched)", async () => {
+  const cand = id(24);
+  const w = world({ "cccccccc-hc": grant("cf.token.headcount.setup", T, { made: [cand], deleted: [] }) });
+  add(w, mc("hu1", T + 10_000, cand, { name: "front-desk headcount b", exp: null }));
+  await w.run(T + 50 * H);
+  assert.equal(w.has("outlived:hu1").length, 1);
+  assert.ok(!w.m().expl.find((e: any) => e.id === "hu1").o, "an unconfirmed headcount candidate was marked decided");
+});
+
+test("#9: a replay never puts more than MAX_PENDING master writes in the pending list; it holds its place", async () => {
+  const w = world();
+  await w.run(T, 0);
+  for (let i = 0; i < MAX_PENDING + 20; i++) w.log.push(mc(`rq${i}`, T + MIN + i, id(i + 1)));
+  add(w);
+  revert(w, T + 3 * H);
+  for (let n = 1; n <= 3; n++) await w.run(T + 3 * H + n * MIN, 0);
+  assert.ok(w.m().pend.length <= MAX_PENDING, `the replay grew pending to ${w.m().pend.length}`);
+  assert.ok(w.m().rp, "the replay dropped its place when pending was full");
+});
+
+test("#12: an echo waits while its key event is matched, then says approved by your tap", async () => {
+  const w = world();
+  add(w, mc("k12", T + 10_000, id(1), {}), shapes.echo("e12", T + 12_000)); // a pair: same address, within 5 s
+  await w.run(T + H, 0); // no tap result yet: the key event is pending
+  assert.equal(w.has("echo:e12").length, 0, "the echo was told before its key event was judged");
+  (w.fx.grants as any)["aaaaaaaa-12"] = grant("cf.dns.list", T, { made: [id(1)], deleted: [] });
+  await w.run(T + 2 * H);
+  assert.match(w.has("echo:e12")[0]?.text ?? "", /approved by your tap aaaaaaaa/, "the echo of a matched write does not say approved by your tap");
+});
+
+test("#13: the weekly counts name at most five taps; the rest are counted together", async () => {
+  const gs: Record<string, unknown> = {};
+  for (let i = 0; i < 8; i++) gs[`${String(i).repeat(8)}-t`] = grant("cf.token.accept", T + i * 10 * MIN, { made: [], deleted: [id(i + 1)] });
+  const w = world(gs);
+  for (let i = 0; i < 8; i++) add(w, md(`wk${i}`, T + i * 10 * MIN + 10_000, id(i + 1)));
+  await w.run(T + 3 * H);
+  const c = state(w.b).week.counts, named = Object.keys(c).filter((k) => k.startsWith("master writes matched to tap "));
+  assert.equal(named.length, 5, "the weekly counts are not bounded to five named taps");
+  assert.equal(c["master writes matched to other taps"], 3, "the other taps were not counted together");
+});
+
+test("#14: matching is reported active again once the pending work it waited on is judged", async () => {
+  const w = world();
+  add(w, mc("st1", T, id(1)));
+  await w.run(T + 7 * H, T - 2 * H);
+  assert.equal((await w.run(T + 8 * H, T - 2 * H)).matching, "incomplete", "stale pending work did not report matching incomplete");
+  const r = await w.run(T + 9 * H);
+  assert.equal(w.has("incomplete").length, 1, "test setup: the historical incident left the list");
+  assert.equal(r.matching, "active", "a resolved incident kept matching reported incomplete");
+});
+
+test("S3: records keeps a bare revoked number until cfaudit confirms it handled it", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.records(t0 + 30 * MIN);
+  const rs = JSON.parse(w.b.store.get(RECORDS_KEY)!.body);
+  rs.effects.revoked = { "9": "" };
+  w.b.store.set(RECORDS_KEY, { body: JSON.stringify(rs), etag: "s3" });
+  await w.records(t0 + 90 * MIN);
+  assert.ok(Object.hasOwn(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.revoked, "9"), "a bare number was dropped before cfaudit confirmed it");
+  w.b.store.set(STATE_KEY, { body: JSON.stringify({ v: 1, m: { rj: ["9"] } }), etag: "s3c" });
+  await w.records(t0 + 150 * MIN);
+  assert.ok(!Object.hasOwn(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.revoked, "9"), "a confirmed, no longer raised number was kept");
+});
+
+test("#5: the rebuild floor covers late and not-yet-indexed matched events, not only the checkpoint", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS;
+  await w.crons(t0 + H, on + 30 * H);
+  const rs = JSON.parse(w.b.store.get(RECORDS_KEY)!.body), cs = state(w.b);
+  const lateT = cs.m.t - 10 * H;
+  cs.m.late = [{ id: "lt1", a: "create", k: id(1), t: lateT, ok: true, ep: 1 }];
+  delete rs.effects;
+  w.b.store.set(RECORDS_KEY, { body: JSON.stringify(rs), etag: "f5" });
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(cs), etag: "f5c" });
+  await w.records(on + 31 * H);
+  assert.equal(JSON.parse(w.b.store.get(RECORDS_KEY)!.body).effects.since, lateT - GRANT_TTL_MS - H, "the rebuild floor ignored a late event's needs");
+});
+
+// ---- #15: the six conditions that had no distinguishing test ----
+
+test("#15 epoch: two runs activating at the same boundary append one epoch", async () => {
+  const w = world();
+  await w.run(ON - H, 0); // saved, still warming up
+  w.b.store.set(EPOCHS_KEY, { body: JSON.stringify({ epochs: [{ n: 1, boundary: ON }] }), etag: "raced" }); // a rival run activated first
+  await w.run(ON + H, 0);
+  assert.equal(JSON.parse(w.b.store.get(EPOCHS_KEY)!.body).epochs.length, 1, "a repeated activation appended a second epoch");
+});
+
+test("#15 headcount-read filter: only the key's own List Tokens read counts as in use", async () => {
+  const inst = id(25);
+  const w = world({ "bbbbbbbb-hc": grant("cf.token.headcount.setup", T, { made: [inst], deleted: [] }) });
+  const other = shapes.view("hf2", T + 25 * H, inst); other.action.description = "Get Token"; other.resource = { product: "tokens" };
+  add(w, mc("hf1", T + 10_000, inst, { name: "front-desk headcount a", exp: null }), other);
+  await w.run(T + 50 * H);
+  assert.equal(w.has("outlived:hf1").length, 1, "a read other than List Tokens confirmed the headcount key");
+});
+
+test("#15 reverse dedupe: a reverse miss is raised once, never again after its incident leaves the list", async () => {
+  const w = world({ "aaaaaaaa-rd": grant("cf.dns.list", T, { made: [id(1)], deleted: [] }) });
+  await w.run(T + 2 * H);
+  assert.equal(w.has("reverse:").length, 1);
+  await w.run(T + 31 * 24 * H);
+  assert.equal(w.has("reverse:").length, 0, "a reverse miss was raised again after its incident left the list");
+});
+
+test("#15 replay tie: ids already read at the replay's instant are skipped, so the position never repeats them", async () => {
+  const w = world();
+  await w.run(T, 0);
+  for (let i = 0; i < 1300; i++) w.log.push(shapes.view(`tv${i}`, T + MIN + (i < 590 ? i : 590), id(77)));
+  add(w);
+  revert(w, T + 3 * H);
+  await w.run(T + 3 * H + MIN);
+  await w.run(T + 3 * H + 2 * MIN);
+  const ids = w.m().rp?.ids ?? [];
+  assert.equal(new Set(ids).size, ids.length, "the replay re-read ids at its instant");
+});
+
+test("#15 delete deadline: a helper deleted after 24 h is still an outlived helper", async () => {
+  const w = world({ "aaaaaaaa-dl": grant("cf.dns.list", T, { made: [id(1)], deleted: [] }), "bbbbbbbb-dl": grant("cf.token.accept", T + 25 * H, { made: [], deleted: [id(1)] }) });
+  add(w, mc("dl1", T + 10_000, id(1)), md("dl2", T + 25 * H + 10_000, id(1)));
+  await w.run(T + 27 * H);
+  assert.equal(w.has("outlived:dl1").length, 1, "a delete after 24 h counted as in time");
+});
+
+test("M1: production path, an honest trace per permitted job and path matches with no unmatched alert", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS;
+  let t = Math.floor(on / H) * H + 2 * H + 5 * MIN, k = 100;
+  const jobs: [string, boolean, string[], number][] = [["cf.dns.list", false, ["Zone Read", "DNS Read"], 2], ["cf.dns.list", true, ["Zone Read", "DNS Read"], 2], ["cf.zone.read", false, ["Zone Read"], 2], ["cf.zone.read", true, ["Zone Read"], 2], ["cf.audit.read", false, ["Account Settings Read"], 1], ["cf.audit.read", true, ["Account Settings Read"], 1]];
+  for (const [job, card, pg, n] of jobs) {
+    const keys = Array.from({ length: n }, () => id(++k)), g = `5ca1ab1e-0000-4000-8000-${String(k).padStart(12, "0")}`;
+    await w.tap(g, job, t, { made: keys, deleted: keys }, { card });
+    keys.forEach((key, i) => w.log.push(mc(`m1c${k}${i}`, t + MIN + 1000 + i * 2000, key, { pg: [pg[i % pg.length]] }), md(`m1d${k}${i}`, t + MIN + 2000 + i * 2000, key)));
+    t += 10 * MIN;
+  }
+  const hcOld = id(++k), hcNew = id(++k), sweep = id(++k);
+  await w.tap("5ca1ab1e-0000-4000-8000-0000000000h1".replace("h", "a"), "cf.token.headcount.setup", t, { made: [hcNew], deleted: [hcOld] });
+  w.log.push(mc("m1hc", t + MIN + 1000, hcNew, { name: "front-desk headcount 2026", exp: null }), md("m1ho", t + MIN + 2000, hcOld), hcRead("m1hr", t + 30 * MIN, hcNew));
+  t += 10 * MIN;
+  await w.tap("5ca1ab1e-0000-4000-8000-0000000000a2", "cf.token.accept", t, { made: [], deleted: [sweep] });
+  w.log.push(md("m1sw", t + MIN + 1000, sweep));
+  w.log.sort((x, y) => Date.parse(x.action.time) - Date.parse(y.action.time));
+  await w.crons(t0 + H, t + 4 * H);
+  assert.deepEqual(w.inc().filter((i) => /^(change|reverse|outlived):/.test(i.id)), [], "an honest production-path trace alerted");
+  assert.equal(state(w.b).m.pend.length, 0, "an honest write is still pending");
+});
+
+test("#15 dedupe: an event read by both the replay and the main read is judged once", async () => {
+  const w = world();
+  add(w, mc("dd1", T, id(1)));
+  await w.run(T + 30 * MIN, 0);
+  add(w, mc("dd2", T + 2 * H, id(2)), mc("dd3", T + 2 * H, id(3))); // build a judged dd2; dd3 at the same instant it had not
+  revert(w, T + 2 * H);
+  const s = state(w.b); s.bm.ids = ["dd2"]; w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "dd" });
+  await w.run(T + 3 * H, 0);
+  const ids = [...w.m().pend, ...w.m().late, ...w.m().expl].map((e: any) => e.id);
+  assert.equal(new Set(ids).size, ids.length, "an event read twice was queued twice");
 });
