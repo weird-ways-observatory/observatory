@@ -2196,6 +2196,149 @@
         "name": "live-1: a ref is the whole event id, so two events a second apart never share one"
       },
       "expect": "M:live-1"
+    },
+    {
+      "id": "cf-stage-rule",
+      "row": "139071ea#E2",
+      "file": "src/card.ts",
+      "find": "  if (r.stage !== \"result\") return has ? \"only a result may carry cf\" : undefined;",
+      "replace": "  if (r.stage !== \"result\") return undefined;",
+      "why": "card 139071ea R6: cf allowed on any stage",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "rule: only a Cloudflare-master result carries cf; from CF_FROM it must, well formed; 0 and 16 ids pass, 17 do not"
+      },
+      "expect": "cf on a request was admitted"
+    },
+    {
+      "id": "cf-job-rule",
+      "row": "139071ea#E2",
+      "file": "src/card.ts",
+      "find": "  if (!CF_JOBS.includes(r.job as string)) return has ? \"only a Cloudflare-master job's result may carry cf\" : undefined;",
+      "replace": "  if (!CF_JOBS.includes(r.job as string)) return undefined;",
+      "why": "card 139071ea R6: cf allowed on non-master results",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "rule: only a Cloudflare-master result carries cf; from CF_FROM it must, well formed; 0 and 16 ids pass, 17 do not"
+      },
+      "expect": "cf on a test.echo result was admitted"
+    },
+    {
+      "id": "cf-activation-boundary",
+      "row": "139071ea#E2",
+      "file": "src/card.ts",
+      "find": "  if (!has) return opened >= from ?",
+      "replace": "  if (!has) return opened > from ?",
+      "why": "card 139071ea R6: activation starts 1 ms late",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "rule: only a Cloudflare-master result carries cf; from CF_FROM it must, well formed; 0 and 16 ids pass, 17 do not"
+      },
+      "expect": "cf.zone.read: a result without cf was admitted"
+    },
+    {
+      "id": "cf-list-bound",
+      "row": "139071ea#E2",
+      "file": "src/card.ts",
+      "find": "Array.isArray(v) && v.length <= CF_LIST_MAX &&",
+      "replace": "Array.isArray(v) && v.length <= CF_LIST_MAX + 1 &&",
+      "why": "card 139071ea R6: list bound off by one",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "rule: only a Cloudflare-master result carries cf; from CF_FROM it must, well formed; 0 and 16 ids pass, 17 do not"
+      },
+      "expect": "malformed cf admitted: 17 made"
+    },
+    {
+      "id": "cf-exact-keys",
+      "row": "139071ea#E2",
+      "file": "src/card.ts",
+      "find": "Object.keys(cf).sort().join() === \"deleted,made\" && ",
+      "replace": "",
+      "why": "card 139071ea R6: extra keys in cf admitted",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "rule: only a Cloudflare-master result carries cf; from CF_FROM it must, well formed; 0 and 16 ids pass, 17 do not"
+      },
+      "expect": "malformed cf admitted: an extra key"
+    },
+    {
+      "id": "cf-id-case",
+      "row": "139071ea#E2",
+      "file": "src/card.ts",
+      "find": "const KEY_ID = /^[0-9a-f]{32}$/;",
+      "replace": "const KEY_ID = /^[0-9a-fA-F]{32}$/;",
+      "why": "card 139071ea R6: upper-case ids admitted",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "rule: only a Cloudflare-master result carries cf; from CF_FROM it must, well formed; 0 and 16 ids pass, 17 do not"
+      },
+      "expect": "malformed cf admitted: an upper-case id"
+    },
+    {
+      "id": "cf-recorder-result",
+      "row": "139071ea#E2",
+      "file": "src/recorder/ledger.ts",
+      "find": "      const noCf = cfRefusal(r, grant.opened, this.cfFrom);",
+      "replace": "      const noCf = undefined as string | undefined;",
+      "why": "card 139071ea R6: recorder skips cf on later stages",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "recorder: every master job, card and ordinary, opened at CF_FROM: lists and unknown stored; missing, malformed or 17 ids refused"
+      },
+      "expect": "a result without cf was stored"
+    },
+    {
+      "id": "cf-recorder-request",
+      "row": "139071ea#E2",
+      "file": "src/recorder/ledger.ts",
+      "find": "      const noCf = cfRefusal(r, t, this.cfFrom);",
+      "replace": "      const noCf = undefined as string | undefined;",
+      "why": "card 139071ea R6: recorder skips cf on requests",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "recorder: cf on a request, approval or verdict is refused, and on a non-master job's result, before or after CF_FROM"
+      },
+      "expect": "cf on a request was stored"
+    },
+    {
+      "id": "cf-recorder-writer-time",
+      "row": "139071ea#E2",
+      "file": "src/recorder/ledger.ts",
+      "find": "cfRefusal(r, grant.opened, this.cfFrom)",
+      "replace": "cfRefusal(r, typeof r.at === \"number\" ? r.at : grant.opened, this.cfFrom)",
+      "why": "card 139071ea R6: recorder trusts the writer's time",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "recorder: activation by the stored request time -- 1 ms before CF_FROM is legacy (resend admitted), exactly at is bound, a writer's earlier time is ignored"
+      },
+      "expect": "a writer-supplied earlier time exempted a bound grant"
+    },
+    {
+      "id": "cf-checker-shared-step",
+      "row": "139071ea#E2",
+      "file": "src/records.ts",
+      "find": "              const noCf = f ? undefined : cfRefusal(r.record!, open[grant].at, cfFrom);",
+      "replace": "              const noCf = undefined as string | undefined;",
+      "why": "card 139071ea R6: checker skips cf",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "checker: every master job, card and ordinary tap, at CF_FROM: a missing or malformed cf is flagged in the shared step; lists and unknown are not"
+      },
+      "expect": "the checker's cf findings are not exactly"
+    },
+    {
+      "id": "cf-checker-record-time",
+      "row": "139071ea#E2",
+      "file": "src/records.ts",
+      "find": "cfRefusal(r.record!, open[grant].at, cfFrom)",
+      "replace": "cfRefusal(r.record!, Date.parse(r.env!.recorded_at), cfFrom)",
+      "why": "card 139071ea R6: checker times the rule by the record, not its request",
+      "test": {
+        "file": "test/cfkeys.test.ts",
+        "name": "checker: cf on an approval, or on a non-master result, is flagged; a legacy grant without cf is not, and a rebuild over legacy results stays green"
+      },
+      "expect": "cf findings differ from the approval and non-master results"
     }
   ],
   "retired": []

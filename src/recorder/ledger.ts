@@ -10,7 +10,7 @@
 import { b64, DAY_CAP, GRANT_TTL_MS, keyFor, MAX_STORED_BYTES, receiptSealed, sealed, sha256, SKEW_MS, STAGE_SLOTS, STORE_BUDGET_BYTES, unb64, validate, type Envelope, type Receipt, type Stage, type WriterRecord } from "../contract.ts";
 import { approvalCheck, grantHashOf, PASSKEY_PIN, type ApprovalCheck } from "./passkey.ts";
 import { OP_DAY_CAP, RESULT_MS, RUN_CUTOFF_BYTES } from "../ops.ts";
-import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_SHARE, cardApproval, isCardId, repoIdRefusal } from "../card.ts";
+import { CARD_ELIGIBLE, CARD_OUTCOMES, CARD_SHARE, cardApproval, CF_FROM, cfRefusal, isCardId, repoIdRefusal } from "../card.ts";
 
 /**
  * The slice of Durable Object storage used here; each put of several keys is one atomic write.
@@ -132,11 +132,13 @@ export class Ledger {
   private bucket: Bucket;
   private budget: number;
   private approvals: ApprovalCheck;
-  constructor(storage: Storage, bucket: Bucket, budget = STORE_BUDGET_BYTES, approvals = approvalCheck(PASSKEY_PIN)) {
+  private cfFrom: number; // card 139071ea R6: from when a Cloudflare-master result must carry `cf` (card.ts CF_FROM)
+  constructor(storage: Storage, bucket: Bucket, budget = STORE_BUDGET_BYTES, approvals = approvalCheck(PASSKEY_PIN), cfFrom = CF_FROM) {
     this.storage = storage;
     this.bucket = bucket;
     this.budget = budget;
     this.approvals = approvals;
+    this.cfFrom = cfFrom;
   }
 
   /**
@@ -263,6 +265,9 @@ export class Ledger {
     let next: Grant;
     if (r.stage === "request") {
       const onCard = r.card !== undefined;
+      // `cf` (card 139071ea R6) is never on a request; later stages are judged below, by the grant's stored opening time.
+      const noCf = cfRefusal(r, t, this.cfFrom);
+      if (noCf) return { status: 409, why: noCf, ...(onCard ? { word: "card_refused" as const } : {}) };
       if (onCard && (!isCardId(r.card) || !CARD_ELIGIBLE.includes(r.job))) return { status: 409, why: "this request cannot be on a card: its card id or job is not allowed", word: "card_refused" };
       if (meta.used + STAGE_SLOTS > DAY_CAP) return { status: 429, why: `today's ${DAY_CAP} record slots are taken` };
       if (meta.bytes + reservedBytes(meta) + STAGE_SLOTS * MAX_STORED_BYTES > this.budget) return { status: 429, why: "the recorder's storage budget is full: Ben must decide" };
@@ -285,6 +290,9 @@ export class Ledger {
       if (r.stage === "result" && grant.card !== undefined && !(typeof r.outcome === "string" && CARD_OUTCOMES.includes(r.outcome))) return { status: 409, why: "a card entry's result must be done, failed or unknown", word: "card_refused" };
       const noRepo = r.stage === "result" ? repoIdRefusal(r) : undefined;
       if (noRepo) return { status: 409, why: noRepo, ...(grant.card !== undefined ? { word: "card_refused" as const } : {}) };
+      // Every result, card or ordinary tap, against the time the recorder stored its request (R6); never on an approval or verdict.
+      const noCf = cfRefusal(r, grant.opened, this.cfFrom);
+      if (noCf) return { status: 409, why: noCf, ...(grant.card !== undefined ? { word: "card_refused" as const } : {}) };
       // Its slot was reserved when the request was taken (and carried into today if need be).
       meta = { ...meta, open: meta.open.map((o) => (o.grant === r.grant ? { ...o, left: Math.max(0, o.left - 1) } : o)) };
       next = grant;

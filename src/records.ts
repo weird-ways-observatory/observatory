@@ -16,6 +16,7 @@ import { DAY_CAP, GRANT_TTL_MS, MAX_STORED_BYTES, ROOT, sealed, sha256, SKEW_MS,
 import { isOpStage, nameOf, OPS_FROM, poolUse, validateOp, type AnyStage, type Op, type OpResult } from "./ops.ts";
 import { badOp, capacityFindings, cardOpen, countBytes, fp, loadCards, loadOps, measures, onApproval, onCardApproval, onCardRequest, onCardResult, onOp, onRequest, onResult, poolFindings, pruneDays, settle, settleCards, type CardsState, type OpsState } from "./runcheck.ts";
 import { readLockLength, type LockEnv } from "./lock.ts";
+import { CF_FROM, cfRefusal } from "./card.ts";
 
 export interface RecordsEnv extends AlertEnv, LockEnv {
   RECORDS?: Pick<R2Bucket, "list" | "get">; // read and list only: this job never writes there
@@ -242,7 +243,7 @@ export type RecordsVerdict = "ran" | "unverified";
 
 /** One hour's run: read what is new, judge, alert once per new finding that is delivered, keep state, ping. `pin` null: no pin. */
 /** `opsFrom`: ops.ts OPS_FROM, a reviewed constant (never an env var); tests pass their own, as with `pin`. */
-export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, pin: Pin | null = PIN ?? null, opsFrom: number | undefined = OPS_FROM) {
+export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, pin: Pin | null = PIN ?? null, opsFrom: number | undefined = OPS_FROM, cfFrom: number = CF_FROM) {
   let prev: State = {};
   try {
     const saved = await env.COPY.get(STATE_KEY);
@@ -408,6 +409,9 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
               // Signed time, so tap reservation ages match the recorder (W1; Codex r1 #2).
               const at = Date.parse(r.env!.recorded_at);
               const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, at, next, shown);
+              // `cf` (card 139071ea R6): every stage of every tap grant, card or ordinary, timed by its request's signed recorded_at.
+              const noCf = f ? undefined : cfRefusal(r.record!, open[grant].at, cfFrom);
+              if (noCf) findings.push({ id: `cf-bad:${grant}:${next}`, text: `grant ${shown} (record ${next}): ${noCf}` });
               if (f) findings.push(f);
               else if (stage === "request") onRequest(ops, grant, next, r.env!.sha256, r.job!, r.record!, at), findings.push(...(await onCardRequest(cards, grant, next, r.env!.sha256, r.job!, r.record!, at)));
               else if (stage === "approval") onApproval(ops, grant, r.request), findings.push(...(await onCardApproval(cards, grant, next, r.record!, at)));

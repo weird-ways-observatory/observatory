@@ -34,6 +34,41 @@ export function repoIdRefusal(r: Record<string, unknown>): string | undefined {
   return has ? "only a done gh.repo.create result may carry a repo_id" : undefined;
 }
 
+/**
+ * Jobs that open the Cloudflare master (card 139071ea; studio-os REFINE-139071ea-cf-keys-in-results.md v2.1 R6), the
+ * Observatory's own list: only their results carry `cf`, the keys the tap made and deleted, so the hourly audit
+ * check (cfaudit.ts) can match master-key events to Ben's taps. Card or ordinary tap alike.
+ */
+export const CF_JOBS: readonly string[] = Object.freeze(["cf.zone.read", "cf.dns.list", "cf.audit.read", "cf.token.headcount.setup", "cf.token.accept"]);
+export const CF_LIST_MAX = 16; // ids per list; the desk's producer never exceeds 12 (R10), and never cuts a list short
+/**
+ * The rule binds grants whose request was recorded at or after this time (R6). Chosen after the front desk that writes
+ * `cf` went live: front-desk main 2f77f7e, merged 2026-11-13 18:31:48 UTC, Workers Builds succeeded; a live card result
+ * carrying `cf` was recorded at 18:35:27.985Z (studio-os LIVE-PROOF-139071ea.md). Earlier grants are legacy: `cf` is
+ * optional, so their frozen bodies resend as they are, and they end by themselves 24 h on (GRANT_TTL_MS). After a
+ * rollback, turning the rule back on takes a fresh time chosen the same way, never this one again (R7).
+ */
+export const CF_FROM = Date.parse("2026-11-13T19:00:00.000Z");
+const KEY_ID = /^[0-9a-f]{32}$/;
+const idList = (v: unknown) => Array.isArray(v) && v.length <= CF_LIST_MAX && v.every((x) => typeof x === "string" && KEY_ID.test(x));
+
+/**
+ * Why a record's `cf` is refused, or undefined (R6). `opened`: when the grant's request was recorded, as the recorder
+ * stored it (the recorder's `Grant.opened`, the checker's request `recorded_at`), never a time the writer supplies.
+ * Only a Cloudflare-master result may carry `cf`; from CF_FROM on it must, as `"unknown"` or exactly
+ * `{made, deleted}`, each a list of 0-16 key ids. A legacy result may leave it out, but one it carries is checked too.
+ */
+export function cfRefusal(r: Record<string, unknown>, opened: number, from = CF_FROM): string | undefined {
+  const has = Object.hasOwn(r, "cf");
+  if (r.stage !== "result") return has ? "only a result may carry cf" : undefined;
+  if (!CF_JOBS.includes(r.job as string)) return has ? "only a Cloudflare-master job's result may carry cf" : undefined;
+  if (!has) return opened >= from ? "a Cloudflare-master result must carry cf" : undefined;
+  const cf = r.cf;
+  if (cf === "unknown") return undefined;
+  const ok = !!cf && typeof cf === "object" && !Array.isArray(cf) && Object.keys(cf).sort().join() === "deleted,made" && idList((cf as Record<string, unknown>).made) && idList((cf as Record<string, unknown>).deleted);
+  return ok ? undefined : `cf must be "unknown" or {made, deleted}, each at most ${CF_LIST_MAX} key ids`;
+}
+
 /** What Ben's tap covers, exactly these six keys. `deadline`: epoch ms, the latest any entry may start. */
 export interface Manifest { kind: "card/v1"; card: string; requester: string; entries: string[]; deadline: number; jobs_version: number }
 /** What a grant carries for the card rules: its job, the request's card id, its checked grant hash and expiry. */
