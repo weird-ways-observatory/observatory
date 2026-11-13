@@ -57,7 +57,12 @@ interface State {
 }
 
 const iso = (t: number) => new Date(t).toISOString();
-const ref = (id: string) => id.replace(/[^A-Za-z0-9]/g, "").slice(0, 8) || "none";
+/** The whole event id (Codex live-words r2: any shortened form can collide). Cloudflare ids are UUIDs; anything
+ * else is cut to letters, digits and dashes, at most 40, so a malformed id cannot flood the alert. */
+const ref = (id: string) => id.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40) || "none";
+/** How a change was made, in plain words. */
+const VIA: Record<string, string> = { dash: "in the dashboard", api: "through the API", api_token: "by an API key", api_key: "by a Global API Key" };
+const via = (how: string) => (Object.hasOwn(VIA, how) ? VIA[how] : `by ${how}`); // own keys only (Codex live-words r1 #2)
 /** An echo with no key event to explain it: the riskier kind, so it gets its own line before paired ones (Ben, a4ef945a A, 2026-11-13). */
 const lonely = (i: Incident) => i.id.startsWith("echo:") && i.text.includes("logged only as an echo");
 const KIND: Record<string, [string, string]> = {
@@ -302,7 +307,7 @@ export async function runCfAudit(env: CfAuditEnv, fetchFn: (req: Request) => Pro
     const at = v.v === "counted" ? "" : iso(t); // built only for incident text
     if (v.v === "counted") counts[v.group] = (counts[v.group] ?? 0) + 1;
     else if (v.v === "unreadable") add(`change:${id}`, `Cloudflare logged an unreadable change at ${at}, ref ${ref(id)}`, s.rebuiltAt !== undefined && t < s.rebuiltAt);
-    else if (v.v === "alert") add(`change:${id}`, `Cloudflare ${j.attempted ? "change attempted (it failed)" : "changed"} with no approved request on record: ${j.label} by ${j.how} at ${at}, ref ${ref(id)} (${v.why})`, s.rebuiltAt !== undefined && t < s.rebuiltAt);
+    else if (v.v === "alert") add(`change:${id}`, `Cloudflare ${j.attempted ? "change attempted (it failed)" : "changed"} with no approved request on record: ${j.label} ${via(j.how)} at ${at}, ref ${ref(id)} (${v.why})`, s.rebuiltAt !== undefined && t < s.rebuiltAt);
     if (j.pair && j.pair.ip !== undefined) {
       const ip = hashed.get(j.pair.ip) ?? hashed.set(j.pair.ip, await hashIp(j.pair.ip)).get(j.pair.ip)!, want = j.pair.k === "key" ? "echo" : "key";
       const r: Recent = { id, k: j.pair.k, a: j.pair.a, ip, t };

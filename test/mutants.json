@@ -2105,6 +2105,97 @@
         "name": "r2 (Ben a4ef945a A): in an overflowing push, unpaired echoes get their own lines before paired ones are counted"
       },
       "expect": "M:r2 unpaired"
+    },
+    {
+      "id": "live-absent-type",
+      "row": "A1",
+      "file": "src/cfjudge.ts",
+      "find": "[res?.product, res?.type].filter((x) => x !== undefined && x !== \"\")",
+      "replace": "[res?.product, res?.type]",
+      "why": "live alert 2026-11-13: an absent resource type shown as /missing",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "A1: a write by a key other than the master key alerts once, with one push"
+      },
+      "expect": "M:A1 why"
+    },
+    {
+      "id": "live-via",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": "${via(j.how)} at",
+      "replace": "by ${j.how} at",
+      "why": "live alert 2026-11-13: raw sign-in field (by dash) in the alert",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-2: a dashboard key change reads in plain words, with no absent field shown"
+      },
+      "expect": "M:live-2"
+    },
+    {
+      "id": "live-via-own",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": "(Object.hasOwn(VIA, how) ? VIA[how] : `by ${how}`)",
+      "replace": "(VIA[how] ?? `by ${how}`)",
+      "why": "Codex live-words r1 #2: inherited property text in an alert",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-4 (Codex live-words r1 #2): an unknown sign-in named like a built-in property reads as itself"
+      },
+      "expect": "M:live-4"
+    },
+    {
+      "id": "live-user-key",
+      "row": "A1",
+      "file": "src/cfjudge.ts",
+      "find": ": userKey ? \"user API key\" :",
+      "replace": ":",
+      "why": "Codex live-words r1 #3: user key shape shown raw",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-5 (Codex live-words r1 #3): a user key and a change naming nothing read plainly"
+      },
+      "expect": "M:live-5"
+    },
+    {
+      "id": "live-unnamed",
+      "row": "A1",
+      "file": "src/cfjudge.ts",
+      "find": "named || \"unnamed resource\"",
+      "replace": "named",
+      "why": "Codex live-words r1 #3: a change naming nothing shown as a blank",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-5 (Codex live-words r1 #3): a user key and a change naming nothing read plainly"
+      },
+      "expect": "M:live-5"
+    },
+    {
+      "id": "live-ref-whole",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": ".slice(0, 40) || \"none\"",
+      "replace": ".slice(-12) || \"none\"",
+      "why": "Codex live-words r2: a shortened ref collides",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-3 (Codex live-words r1 #1, r2): two ids with the same time and the same last 12 characters get different refs"
+      },
+      "expect": "M:live-3"
+    },
+    {
+      "id": "live-ref-prefix",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": ".slice(0, 40) || \"none\"",
+      "replace": ".slice(0, 8) || \"none\"",
+      "why": "live alert 2026-11-13: the time-ordered start as a ref",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-1: a ref is the whole event id, so two events a second apart never share one"
+      },
+      "expect": "M:live-1"
     }
   ],
   "retired": []

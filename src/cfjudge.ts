@@ -36,19 +36,23 @@ export function judge(e: Record<string, unknown>, who: Who): Judged {
   const action = obj(e.action), actor = obj(e.actor), res = obj(e.resource);
   const type = action && typeof action.type === "string" ? action.type : undefined;
   const product = str(res?.product), rtype = str(res?.type);
-  const label = `${word(res?.product)}/${word(res?.type)} ${word(type)}`;
   // A sign-in field Cloudflare left out (system writes: VERIFIED 2026-11-12, 60 of 60) differs from one that is
   // present but not text: the second is malformed and never reads as "none" (Codex r1 #3).
   const rawCtx = actor?.context, ctx = typeof rawCtx === "string" ? rawCtx : undefined, atype = str(actor?.type);
   const how = ctx !== undefined ? word(ctx) : rawCtx !== undefined ? "unknown" : atype ? word(atype) : "missing";
   const attempted = action?.result !== "success";
+  // Alert words (live alert 2026-11-13; Codex live-words r1 #3): the two key shapes read plainly, an empty or
+  // absent field is not shown, and a change naming nothing says so.
+  const accountKey = product === "tokens" && rtype === "";
+  const userKey = product === "" && rtype === "tokens";
+  const named = [res?.product, res?.type].filter((x) => x !== undefined && x !== "").map(word).join("/");
+  const label = `${accountKey ? "API key" : userKey ? "user API key" : named || "unnamed resource"} ${word(type)}`;
   const out = (verdict: Verdict, pair?: Judged["pair"]): Judged => ({ verdict, label, how, attempted, pair });
   if (!action || !type || !actor || !res) return out({ v: "unreadable", why: "missing action, actor or resource" });
   if (type === "view") return out({ v: "read" });
   if (!WRITES.has(type)) return out({ v: "alert", why: "a kind of change the check has not seen" });
   const key = `${product}|${rtype}`;
-  const accountKey = product === "tokens" && rtype === "";
-  const anyKey = accountKey || (product === "" && rtype === "tokens");
+  const anyKey = accountKey || userKey;
   const member = /member|role/i.test(product) || /member|role/i.test(rtype);
   // Only a successful account-key write is expected to have an echo; only those pair.
   const ip = str(actor.ip_address);
