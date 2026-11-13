@@ -17,8 +17,8 @@ function setup(log: any[] = [], o: { keyId?: string; logReads?: boolean } = {}) 
   const run = async (at: number, over: Record<string, unknown> = {}) => { now = at; return runCfAudit(env(b, over), cf.fetch, new Date(at)); };
   return { b, cf, run };
 }
-const lit = (cf: ReturnType<typeof cloudflare>) => cf.pings.filter((p) => p.url.startsWith(PING) && p.body.startsWith("{")).at(-1)!;
-const red = (cf: ReturnType<typeof cloudflare>) => lit(cf).url.endsWith("/fail");
+const lit = (cf: ReturnType<typeof cloudflare>) => cf.pings.filter((p) => p.url.startsWith(PING) && p.body.startsWith("{")).at(-1);
+const red = (cf: ReturnType<typeof cloudflare>) => lit(cf)?.url.endsWith("/fail") === true; // no light at all is not red
 const ids = (b: ReturnType<typeof bucket>) => state(b).incidents.map((i: any) => i.id);
 const who = { master: MASTER, ben: BEN };
 
@@ -27,9 +27,9 @@ const who = { master: MASTER, ben: BEN };
 test("A1: a write by a key other than the master key alerts once, with one push", async () => {
   const { b, cf, run } = setup([ev("e1", T0, { token: OTHER, product: "dns_records" })]);
   await run(T0 + H);
-  assert.deepEqual(ids(b), ["change:e1"]);
+  assert.deepEqual(ids(b), ["change:e1"], "M:A1 non-master write listed");
   assert.equal(cf.alerts.length, 1);
-  assert.match(cf.alerts[0].message, /no approved request on record: dns_records\/missing create by api_token at .*ref e1 \(a write by a key other than the vault's master key\)/);
+  assert.match(cf.alerts[0].message, /no approved request on record: dns_records\/missing create by api_token at .*ref e1 \(a write by a key other than the vault's master key\)/, "M:A1 why");
   await run(T0 + 2 * H);
   assert.equal(cf.alerts.length, 1, "told once, never again");
 });
@@ -39,10 +39,10 @@ test("A2: a Global API Key write alerts", () => {
 });
 
 test("A3: Ben's dashboard key create alerts; someone else's dashboard DNS edit alerts; Ben's dashboard DNS edit is counted", () => {
-  assert.deepEqual(judge(shapes.benDash("k", T0, "tokens"), who).verdict, { v: "alert", why: "a key or member change in the dashboard" });
+  assert.deepEqual(judge(shapes.benDash("k", T0, "tokens"), who).verdict, { v: "alert", why: "a key or member change in the dashboard" }, "M:A3 dashboard key change alerts");
   assert.deepEqual(judge(ev("u", T0, { ctx: "dash", atype: "user", actor: BEN, product: null, rtype: "tokens", type: "delete" }), who).verdict.v, "alert", "user-level key");
   assert.deepEqual(judge(shapes.benDash("m", T0, "account", "members"), who).verdict.v, "alert", "members");
-  assert.deepEqual(judge(ev("o", T0, { ctx: "dash", atype: "user", actor: OTHER, product: "dns_records" }), who).verdict, { v: "alert", why: "a dashboard change by someone other than Ben" });
+  assert.deepEqual(judge(ev("o", T0, { ctx: "dash", atype: "user", actor: OTHER, product: "dns_records" }), who).verdict, { v: "alert", why: "a dashboard change by someone other than Ben" }, "M:A3 non-Ben dashboard");
   assert.deepEqual(judge(shapes.benDash("d", T0), who).verdict, { v: "counted", group: "dashboard" });
   assert.deepEqual(judge(shapes.benDash("a", T0, "analytics", "query.top-n"), who).verdict, { v: "counted", group: "dashboard" });
   assert.equal(judge(shapes.benDash("n", T0, "zero_trust", "policies"), who).verdict.v, "alert", "an unlisted dashboard kind");
@@ -65,7 +65,7 @@ test("A6: unknown or missing sign-in kinds alert; a missing actor is an unreadab
 });
 
 test("A7: a system write of a kind that is never automatic alerts; known system kinds are counted", () => {
-  assert.equal(judge(ev("x", T0, { ctx: null, atype: "system", product: "tokens" }), who).verdict.v, "alert");
+  assert.equal(judge(ev("x", T0, { ctx: null, atype: "system", product: "tokens" }), who).verdict.v, "alert", "M:A7 system tokens");
   assert.equal(judge(ev("x", T0, { ctx: null, atype: "system" }), who).verdict.v, "alert", "system DNS through the records API is not automatic");
   assert.equal(judge(ev("x", T0, { ctx: null, atype: "system", product: "access", rtype: "apps" }), who).verdict.v, "alert");
   for (const [p, t] of [["dns", "record"], ["certificates", "certificate_pack"], ["certificates", "zone_settings"], ["zone", "settings"]]) assert.deepEqual(judge(ev("x", T0, { ctx: null, atype: "system", product: p, rtype: t }), who).verdict, { v: "counted", group: "system" });
@@ -119,9 +119,11 @@ test("A10: an echo and its key event split across runs still pair once, judged o
 });
 
 test("A10: the address is kept only as a hash", async () => {
-  const { b, run } = setup([shapes.masterDelete("k", T0 + 50 * M, "198.51.100.77")]);
+  // Just inside the read and within 5 s of its end, so the event waits in state for a possible echo.
+  const { b, run } = setup([shapes.masterDelete("k", T0 + H - SETTLE_MS - 2000, "198.51.100.77")]);
   await run(T0 + H);
-  assert.doesNotMatch(b.store.get(STATE_KEY)!.body, /198\.51\.100\.77/);
+  assert.equal(state(b).recent.length, 1, "M:A10 waiting in state");
+  assert.doesNotMatch(b.store.get(STATE_KEY)!.body, /198\.51\.100\.77/, "M:A10 hashed");
 });
 
 // ---------- B. Reading the log honestly ----------
@@ -159,7 +161,7 @@ test("B2/D11: own read missing from the log: one durable incident, red, witness 
   const { b, cf, run } = setup([], { logReads: false });
   await run(T0 + H);
   const r2 = await run(T0 + 2 * H);
-  assert.equal(r2.freshness, "missing");
+  assert.equal(r2.freshness, "missing", "M:D11 missing");
   assert.ok(red(cf));
   const w = state(b).witness;
   assert.equal(w.t, T0 + 2 * H, "the witness moved on");
@@ -214,7 +216,7 @@ test("N3 (r3): a witness past the third lookup page is 'incomplete', never 'miss
   await run(T0 + H);
   const w = state(b).witness;
   const r = await run(T0 + 2 * H);
-  assert.equal(r.freshness, "incomplete");
+  assert.equal(r.freshness, "incomplete", "M:N3 incomplete");
   assert.ok(red(cf));
   assert.deepEqual(state(b).witness, w);
   assert.ok(ids(b).some((i: string) => i.startsWith("fresh:incomplete:")));
@@ -324,8 +326,8 @@ test("B12: an event without an id, or without a time: the page is not read, red,
     const e = ev("x", T0, { token: OTHER });
     if (drop === "id") delete e.id; else delete e.action.time;
     const { b, cf, run } = setup([e]);
-    await run(T0 + H);
-    assert.ok(red(cf), drop);
+    await run(T0 + H).catch(() => undefined); // a throw is also a failure: the light must still say red
+    assert.ok(red(cf), `M:B12 ${drop}`);
     assert.equal(state(b).bm.t, START, drop);
     assert.deepEqual(ids(b), [], drop);
   }
@@ -335,7 +337,7 @@ test("B12: a page out of time order is not read", async () => {
   const { b, cf, run } = setup([ev("b", T0 + 5000, { token: OTHER }), ev("a", T0, { token: OTHER })]);
   cf.log.sort = () => cf.log; // keep the bad order
   await run(T0 + H);
-  assert.ok(red(cf));
+  assert.ok(red(cf), "M:B12 order");
   assert.deepEqual(ids(b), []);
 });
 
@@ -376,7 +378,7 @@ test("D3: two runs at once -- the first save wins; the loser stops before sendin
   const before = cf.alerts.length;
   const [x, y] = await Promise.all([run(T0 + 3 * H), run(T0 + 3 * H)]);
   const reasons = [x.reason, y.reason];
-  assert.equal(reasons.filter((r) => /another run holds the state/.test(String(r))).length, 1);
+  assert.equal(reasons.filter((r) => /another run holds the state/.test(String(r))).length, 1, "M:D3 one loser");
   assert.equal(cf.alerts.length - before, 1, "exactly one alert");
 });
 
@@ -409,7 +411,7 @@ test("D4: state written by a newer version is neither read nor overwritten; the 
   const body = JSON.stringify({ v: VERSION + 1, future: true });
   b.store.set(STATE_KEY, { body, etag: "x" });
   await run(T0 + H);
-  assert.ok(red(cf));
+  assert.ok(red(cf), "M:D4 newer red");
   assert.equal(b.store.get(STATE_KEY)!.body, body);
   assert.equal(cf.alerts.length, 0);
 });
@@ -444,7 +446,7 @@ test("D12: an alert with no channel taking it stays untold and is sent again nex
   const { b, cf, run } = setup([ev("q", T0, { token: OTHER })]);
   cf.pushover = 500; cf.healthchecks = 500;
   await run(T0 + H);
-  assert.equal(state(b).incidents[0].told, false);
+  assert.equal(state(b).incidents[0].told, false, "M:D12 untold");
   cf.pushover = 200; cf.healthchecks = 200;
   await run(T0 + 2 * H);
   assert.equal(state(b).incidents[0].told, true);

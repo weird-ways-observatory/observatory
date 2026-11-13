@@ -1715,6 +1715,240 @@
         "name": "T5: gh.repo.create is on the Observatory's card list: a card request for it is stored"
       },
       "expect": "409"
+    },
+    {
+      "id": "A1-nonmaster-key",
+      "row": "A1",
+      "file": "src/cfjudge.ts",
+      "find": "if (token?.id !== who.master) return",
+      "replace": "if (false) return",
+      "why": "beec640b build a: a write by a non-master key alerts",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "A1: a write by a key other than the master key alerts once, with one push"
+      },
+      "expect": "M:A1 why"
+    },
+    {
+      "id": "A3-dash-key",
+      "row": "A3",
+      "file": "src/cfjudge.ts",
+      "find": "if (anyKey || member) return",
+      "replace": "if (false) return",
+      "why": "beec640b build a: a dashboard key or member change alerts, even Ben's",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "A3: Ben's dashboard key create alerts; someone else's dashboard DNS edit alerts; Ben's dashboard DNS edit is counted"
+      },
+      "expect": "M:A3 dashboard key change alerts"
+    },
+    {
+      "id": "A3-dash-not-ben",
+      "row": "A3",
+      "file": "src/cfjudge.ts",
+      "find": "if (!isBen) return out({ v: \"alert\", why: \"a dashboard change",
+      "replace": "if (false) return out({ v: \"alert\", why: \"a dashboard change",
+      "why": "beec640b build a: a dashboard write by anyone but Ben alerts",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "A3: Ben's dashboard key create alerts; someone else's dashboard DNS edit alerts; Ben's dashboard DNS edit is counted"
+      },
+      "expect": "M:A3 non-Ben dashboard"
+    },
+    {
+      "id": "A7-system-kinds",
+      "row": "A7",
+      "file": "src/cfjudge.ts",
+      "find": "SYSTEM.has(key) ? { v: \"counted\", group: \"system\" }",
+      "replace": "true ? { v: \"counted\", group: \"system\" }",
+      "why": "beec640b build a: system writes count only for the listed kinds",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "A7: a system write of a kind that is never automatic alerts; known system kinds are counted"
+      },
+      "expect": "M:A7 system tokens"
+    },
+    {
+      "id": "A10-echo-always-pushes",
+      "row": "A10",
+      "file": "src/cfaudit.ts",
+      "find": "if (r.k === \"echo\") add(",
+      "replace": "if (r.k === \"echo\" && !r.p) add(",
+      "why": "beec640b build a: a paired echo still pushes (Ben c79e2293 A)",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "A10: a compensating gap -- a key event that lost its echo next to an unrelated echo-only change -- still pushes the echo"
+      },
+      "expect": "the echo is on the list whatever it pairs with"
+    },
+    {
+      "id": "B12-id-time",
+      "row": "B12",
+      "file": "src/cfaudit.ts",
+      "find": "if (typeof e?.id !== \"string\" || !e.id || !Number.isFinite(t)) return",
+      "replace": "if (false) return",
+      "why": "beec640b build a: a page with an event lacking id or time is not read",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "B12: an event without an id, or without a time: the page is not read, red, bookmark held"
+      },
+      "expect": "M:B12 id"
+    },
+    {
+      "id": "B12-order",
+      "row": "B12",
+      "file": "src/cfaudit.ts",
+      "find": "if (t < last) return { events: [], bad: \"the page is not in time order\" };",
+      "replace": "",
+      "why": "beec640b build a: a page out of time order is not read",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "B12: a page out of time order is not read"
+      },
+      "expect": "M:B12 order"
+    },
+    {
+      "id": "B10-tie-skip",
+      "row": "B10",
+      "file": "src/cfaudit.ts",
+      "find": "(t === s.bm.t && s.bm.ids.includes(id))",
+      "replace": "(t === s.bm.t && false)",
+      "why": "beec640b build a: events already judged at the bookmark's millisecond are skipped",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "B10: 700 events at one millisecond are judged over four runs; 900 stop loudly with the bookmark held"
+      },
+      "expect": "each judged exactly once"
+    },
+    {
+      "id": "D3-null-stops",
+      "row": "D3",
+      "file": "src/cfaudit.ts",
+      "find": "if (!r) return false; // R2 answers null",
+      "replace": "if (!r) return true; // R2 answers null",
+      "why": "beec640b build a: a refused save stops the run",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "D3: two runs at once -- the first save wins; the loser stops before sending anything"
+      },
+      "expect": "M:D3 one loser"
+    },
+    {
+      "id": "D12-untold-saved-first",
+      "row": "D12",
+      "file": "src/cfaudit.ts",
+      "find": "  report.new = untold.length;\n  if (!(await saver.save(s))) return stop();",
+      "replace": "  report.new = untold.length;",
+      "why": "beec640b build a: untold incidents are saved before anything is sent",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "D3/N2: a forced null at every save point stops the run with nothing marked told and no alert after it"
+      },
+      "expect": "untold save lost: nothing sent"
+    },
+    {
+      "id": "D12-told-on-delivery",
+      "row": "D12",
+      "file": "src/cfaudit.ts",
+      "find": "if (via === \"pushover\" || (via === \"healthchecks\" && green)) {",
+      "replace": "if (true) {",
+      "why": "beec640b build a: told only when a channel took the alert",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "D12: an alert with no channel taking it stays untold and is sent again next run (at least once)"
+      },
+      "expect": "M:D12 untold"
+    },
+    {
+      "id": "D11-missing-witness",
+      "row": "D11",
+      "file": "src/cfaudit.ts",
+      "find": "} else if (T - w.t > WITNESS_GRACE_MS) {",
+      "replace": "} else if (false) {",
+      "why": "beec640b build a: own read missing from the log is an incident",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "B2/D11: own read missing from the log: one durable incident, red, witness replaced; later recovery keeps the incident"
+      },
+      "expect": "M:D11 missing"
+    },
+    {
+      "id": "N3-incomplete-not-missing",
+      "row": "N3",
+      "file": "src/cfaudit.ts",
+      "find": "    else if (!done) {",
+      "replace": "    else if (false) {",
+      "why": "beec640b build a: a truncated lookup is incomplete, never missing",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "N3 (r3): a witness past the third lookup page is 'incomplete', never 'missing', and is not replaced"
+      },
+      "expect": "M:N3 incomplete"
+    },
+    {
+      "id": "D9-master-setting",
+      "row": "D9",
+      "file": "src/cfaudit.ts",
+      "find": "    !HEX32.test(env.CF_MASTER_KEY_ID ?? \"\") && \"master key id not set or malformed\",",
+      "replace": "",
+      "why": "beec640b build a: a missing master key id is red",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "D9: each setting missing or malformed: red, nothing read, no alert"
+      },
+      "expect": "CF_MASTER_KEY_ID=undefined"
+    },
+    {
+      "id": "D4-newer-state",
+      "row": "D4",
+      "file": "src/cfaudit.ts",
+      "find": "  if (loaded.newer) return finish(",
+      "replace": "  if (false) return finish(",
+      "why": "beec640b build a: state from a newer version is not overwritten",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "D4: state written by a newer version is neither read nor overwritten; the run is red"
+      },
+      "expect": "M:D4 newer red"
+    },
+    {
+      "id": "D8-standing-lines-stay",
+      "row": "D8",
+      "file": "src/cfaudit.ts",
+      "find": "const event = (i: Incident) => /^(change|echo|noecho):/.test(i.id);",
+      "replace": "const event = (i: Incident) => true;",
+      "why": "beec640b build a: standing lines never leave the list early",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "B5/D13: a 1,000-event burst is judged over five runs, none skipped or doubled; lag alerts once, then clears"
+      },
+      "expect": "listed or counted, none lost"
+    },
+    {
+      "id": "A10-ip-hashed",
+      "row": "A10",
+      "file": "src/cfaudit.ts",
+      "find": "const ip = await hashIp(j.pair.ip),",
+      "replace": "const ip = j.pair.ip,",
+      "why": "beec640b build a: addresses are kept only as hashes",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "A10: the address is kept only as a hash"
+      },
+      "expect": "M:A10 hashed"
+    },
+    {
+      "id": "B5-one-judging-page",
+      "row": "B5",
+      "file": "src/cfaudit.ts",
+      "find": "    if (judgedHere) break; // one judging page a run",
+      "replace": "",
+      "why": "beec640b build a: one judging page per run (CPU bound; the lag line shows a backlog)",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "B5/D13: a 1,000-event burst is judged over five runs, none skipped or doubled; lag alerts once, then clears"
+      },
+      "expect": "the lag line is told once, even while the list overflows"
     }
   ],
   "retired": []
