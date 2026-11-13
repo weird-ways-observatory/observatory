@@ -2994,12 +2994,12 @@
       "id": "cfmatch-m-retire-move",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "m.expl = m.expl.filter((x) => !Object.hasOwn(gs, x.g!))",
+      "find": "m.expl = m.expl.filter((x) => !out.has(x.g!))",
       "replace": "void 0",
       "why": "beec640b build b (row 22: retired associations stay in working state)",
       "test": {
         "file": "test/cfmatch.test.ts",
-        "name": "row 22: a finding on a retired record re-judges its events from the monthly index, at any age"
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
       },
       "expect": "retired associations stayed in working state"
     },
@@ -3007,14 +3007,14 @@
       "id": "cfmatch-m-rejudge-retired",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "for (const ev of evs) unexplain(ev);",
+      "find": "for (const ev of hit.evs) unexplain(ev);",
       "replace": "",
       "why": "beec640b build b (row 22/13.3: a retired record's finding re-judges nothing)",
       "test": {
         "file": "test/cfmatch.test.ts",
-        "name": "row 22: a finding on a retired record re-judges its events from the monthly index, at any age"
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
       },
-      "expect": "a retired tap's events were not re-judged once from the index"
+      "expect": "a retired tap's events were not re-judged once at 32 days"
     },
     {
       "id": "cfmatch-m-rejudge-once",
@@ -3025,9 +3025,113 @@
       "why": "beec640b build b (row 22: a re-judged record is not remembered)",
       "test": {
         "file": "test/cfmatch.test.ts",
-        "name": "row 22: a finding on a retired record re-judges its events from the monthly index, at any age"
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
       },
       "expect": "the re-judged record was not remembered"
+    },
+    {
+      "id": "cfmatch-m-ack-index",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!need.length || (await index(",
+      "replace": "if (true || (await index(",
+      "why": "beec640b build b (row 22/13.3: a tap is acknowledged done before its index entry landed)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: a tap is acknowledged done only once its index entry landed"
+      },
+      "expect": "a tap was acknowledged done while its index entry could not be saved"
+    },
+    {
+      "id": "cfmatch-m-index-n",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "for (const n of ns) if (n !== undefined) next.n[n] = g;",
+      "replace": "",
+      "why": "beec640b build b (row 22/13.3: the index cannot be found by record number)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "a retired tap's events were not re-judged once at 32 days"
+    },
+    {
+      "id": "cfmatch-m-bare-revoked",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "else if (n !== undefined) fx.revoked[n] ??= \"\"; // any age (13.3)",
+      "replace": "",
+      "why": "beec640b build b (row 22/13.3: records stops reporting a bad record past its 30-day index)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "a retired tap's events were not re-judged once at 32 days"
+    },
+    {
+      "id": "cfmatch-m-revoked-standing",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "&& !standing.has(n)) delete fx.revoked[n];",
+      "replace": ") delete fx.revoked[n];",
+      "why": "beec640b build b (row 22/13.3: a bare revoked number is pruned before cfaudit reads it)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "a retired tap's events were not re-judged once at 32 days"
+    },
+    {
+      "id": "cfmatch-m-rebuild-lost",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "(seq > 0 && !(pe.grants && typeof pe.grants === \"object\"))",
+      "replace": "false",
+      "why": "beec640b build b (12.5: lost effects restart fresh instead of being rebuilt)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "12.5: effects and matching state both lost: records rebuilds from the last epoch boundary"
+      },
+      "expect": "lost effects with no matching state were not rebuilt from the last epoch"
+    },
+    {
+      "id": "cfmatch-m-rebuild-gen",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "(Number.isInteger(ca?.gen) && fx.gen < ca.gen)",
+      "replace": "false",
+      "why": "beec640b build b (12.5: an older records state restarts silently)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "12.5: a records state older than cfaudit last saw (gen behind) is a recovery, not a silent restart"
+      },
+      "expect": "an older records state was not treated as a recovery"
+    },
+    {
+      "id": "cfmatch-m-rebuild-since",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "since: at - GRANT_TTL_MS - 3_600_000",
+      "replace": "since: now.getTime()",
+      "why": "beec640b build b (row 25/12.5: rebuilt effects do not cover the off period)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 25 / 12.5: end to end, effects lost in a revert are rebuilt from the records: honest taps made while off match, an unnamed write still alerts"
+      },
+      "expect": "the rebuilt effects do not cover the off period"
+    },
+    {
+      "id": "cfmatch-m-rebuild-start",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "  return lo;\n}",
+      "replace": "  return 1;\n}",
+      "why": "beec640b build b (12.5: the rebuild starts at record one, not at the floor)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "12.5: the rebuild starts at the first record at or after the floor, not at record one"
+      },
+      "expect": "records before the floor were rebuilt"
     },
     {
       "id": "cfmatch-m-late-followup",
