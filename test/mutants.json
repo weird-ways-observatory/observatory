@@ -2105,6 +2105,45 @@
         "name": "r2 (Ben a4ef945a A): in an overflowing push, unpaired echoes get their own lines before paired ones are counted"
       },
       "expect": "M:r2 unpaired"
+    },
+    {
+      "id": "live-ref-end",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": ".slice(-8) || \"none\"",
+      "replace": ".slice(0, 8) || \"none\"",
+      "why": "live alert 2026-11-13: refs from the time-ordered start collide",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-1: refs come from the id's unique end, so two events a second apart never share one"
+      },
+      "expect": "M:live-1"
+    },
+    {
+      "id": "live-absent-type",
+      "row": "A1",
+      "file": "src/cfjudge.ts",
+      "find": "${res?.type === undefined ? \"\" : `/${word(res.type)}`}",
+      "replace": "/${word(res?.type)}",
+      "why": "live alert 2026-11-13: an absent resource type shown as /missing",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-2: a dashboard key change reads in plain words, with no absent field shown"
+      },
+      "expect": "M:live-2"
+    },
+    {
+      "id": "live-via",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": "${via(j.how)} at",
+      "replace": "by ${j.how} at",
+      "why": "live alert 2026-11-13: raw sign-in field (by dash) in the alert",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-2: a dashboard key change reads in plain words, with no absent field shown"
+      },
+      "expect": "M:live-2"
     }
   ],
   "retired": []

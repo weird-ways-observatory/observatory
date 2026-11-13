@@ -36,7 +36,8 @@ export function judge(e: Record<string, unknown>, who: Who): Judged {
   const action = obj(e.action), actor = obj(e.actor), res = obj(e.resource);
   const type = action && typeof action.type === "string" ? action.type : undefined;
   const product = str(res?.product), rtype = str(res?.type);
-  const label = `${word(res?.product)}/${word(res?.type)} ${word(type)}`;
+  // Alert words (live alert 2026-11-13): a field Cloudflare left out is not shown, and key changes read plainly.
+  const label = `${res?.product === "tokens" ? "API key" : word(res?.product)}${res?.type === undefined ? "" : `/${word(res.type)}`} ${word(type)}`;
   // A sign-in field Cloudflare left out (system writes: VERIFIED 2026-11-12, 60 of 60) differs from one that is
   // present but not text: the second is malformed and never reads as "none" (Codex r1 #3).
   const rawCtx = actor?.context, ctx = typeof rawCtx === "string" ? rawCtx : undefined, atype = str(actor?.type);
