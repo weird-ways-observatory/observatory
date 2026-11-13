@@ -695,7 +695,7 @@ test("r2 (Ben a4ef945a A): in an overflowing push, unpaired echoes get their own
 
 // ---------- Live words (2026-11-13, first live alert) ----------
 
-test("live-1: refs come from the id's unique end, so two events a second apart never share one", async () => {
+test("live-1: a ref is the whole event id, so two events a second apart never share one", async () => {
   // Cloudflare ids are time-ordered (UUIDv7): events within about a minute share their first 8 characters.
   const key = "0190aaaa-0001-7000-8000-00000000k001", echo = "0190aaaa-0002-7000-8000-00000000e002";
   const { cf, run } = setup([
@@ -704,9 +704,9 @@ test("live-1: refs come from the id's unique end, so two events a second apart n
   ]);
   await run(T0 + H);
   const msg = cf.alerts.map((a) => a.message).join("\n");
-  assert.match(msg, /ref 00000000k001/, "M:live-1 key ref from the id's end");
-  assert.match(msg, /ref 00000000e002/, "M:live-1 echo ref from the id's end");
-  assert.doesNotMatch(msg, /ref 0190aaaa/, "M:live-1 no shared time prefix as a ref");
+  assert.match(msg, /ref 0190aaaa-0001-7000-8000-00000000k001/, "M:live-1 key ref from the id's end");
+  assert.match(msg, /ref 0190aaaa-0002-7000-8000-00000000e002/, "M:live-1 echo ref from the id's end");
+  assert.doesNotMatch(msg, /ref 0190aaaa[,: ]/, "M:live-1 no shortened time prefix as a ref");
 });
 
 test("live-2: a dashboard key change reads in plain words, with no absent field shown", async () => {
@@ -716,13 +716,14 @@ test("live-2: a dashboard key change reads in plain words, with no absent field 
   assert.doesNotMatch(cf.alerts[0].message, /\/missing|by dash/, "M:live-2 no raw field names");
 });
 
-test("live-3 (Codex live-words r1 #1): ids that share their last 8 characters still get different refs", async () => {
-  const a = "0190aaaa-0001-7000-8000-aaaa00001234", b = "0190aaaa-0001-7001-8000-bbbb00001234";
-  const { b: bk, run } = setup([ev(a, T0, { token: OTHER }), ev(b, T0 + 1, { token: OTHER })]);
+test("live-3 (Codex live-words r1 #1, r2): two ids with the same time and the same last 12 characters get different refs", async () => {
+  // Codex live-words r2's counterexample: same time, same last 12 characters, different ids.
+  const a = "0190aaaa-0001-7000-8000-000000001234", b = "0190aaaa-0001-7001-8000-000000001234";
+  const { b: bk, run } = setup([ev(a, T0, { token: OTHER }), ev(b, T0, { token: OTHER })]);
   await run(T0 + H);
   const msg = state(bk).incidents.map((i: any) => i.text).join("\n");
-  assert.match(msg, /ref aaaa00001234/, "M:live-3 first");
-  assert.match(msg, /ref bbbb00001234/, "M:live-3 second");
+  assert.match(msg, /ref 0190aaaa-0001-7000-8000-000000001234 /, "M:live-3 first");
+  assert.match(msg, /ref 0190aaaa-0001-7001-8000-000000001234 /, "M:live-3 second");
 });
 
 test("live-4 (Codex live-words r1 #2): an unknown sign-in named like a built-in property reads as itself", async () => {

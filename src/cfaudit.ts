@@ -57,11 +57,9 @@ interface State {
 }
 
 const iso = (t: number) => new Date(t).toISOString();
-/**
- * The id's last 12 characters. Cloudflare ids are UUIDv7: the start is a timestamp shared by events a minute apart,
- * the last 12 are random. A ref is looked up with the time on the same line (Codex live-words r1 #1).
- */
-const ref = (id: string) => id.replace(/[^A-Za-z0-9]/g, "").slice(-12) || "none";
+/** The whole event id (Codex live-words r2: any shortened form can collide). Cloudflare ids are UUIDs; anything
+ * else is cut to letters, digits and dashes, at most 40, so a malformed id cannot flood the alert. */
+const ref = (id: string) => id.replace(/[^A-Za-z0-9-]/g, "").slice(0, 40) || "none";
 /** How a change was made, in plain words. */
 const VIA: Record<string, string> = { dash: "in the dashboard", api: "through the API", api_token: "by an API key", api_key: "by a Global API Key" };
 const via = (how: string) => (Object.hasOwn(VIA, how) ? VIA[how] : `by ${how}`); // own keys only (Codex live-words r1 #2)

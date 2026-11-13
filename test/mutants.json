@@ -2107,19 +2107,6 @@
       "expect": "M:r2 unpaired"
     },
     {
-      "id": "live-ref-end",
-      "row": "A1",
-      "file": "src/cfaudit.ts",
-      "find": ".slice(-12) || \"none\"",
-      "replace": ".slice(0, 8) || \"none\"",
-      "why": "live alert 2026-11-13: refs from the time-ordered start collide",
-      "test": {
-        "file": "test/cfaudit.test.ts",
-        "name": "live-1: refs come from the id's unique end, so two events a second apart never share one"
-      },
-      "expect": "M:live-1"
-    },
-    {
       "id": "live-absent-type",
       "row": "A1",
       "file": "src/cfjudge.ts",
@@ -2144,19 +2131,6 @@
         "name": "live-2: a dashboard key change reads in plain words, with no absent field shown"
       },
       "expect": "M:live-2"
-    },
-    {
-      "id": "live-ref-12",
-      "row": "A1",
-      "file": "src/cfaudit.ts",
-      "find": ".slice(-12) || \"none\"",
-      "replace": ".slice(-8) || \"none\"",
-      "why": "Codex live-words r1 #1: 8-character tails collide",
-      "test": {
-        "file": "test/cfaudit.test.ts",
-        "name": "live-3 (Codex live-words r1 #1): ids that share their last 8 characters still get different refs"
-      },
-      "expect": "M:live-3"
     },
     {
       "id": "live-via-own",
@@ -2196,6 +2170,32 @@
         "name": "live-5 (Codex live-words r1 #3): a user key and a change naming nothing read plainly"
       },
       "expect": "M:live-5"
+    },
+    {
+      "id": "live-ref-whole",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": ".slice(0, 40) || \"none\"",
+      "replace": ".slice(-12) || \"none\"",
+      "why": "Codex live-words r2: a shortened ref collides",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-3 (Codex live-words r1 #1, r2): two ids with the same time and the same last 12 characters get different refs"
+      },
+      "expect": "M:live-3"
+    },
+    {
+      "id": "live-ref-prefix",
+      "row": "A1",
+      "file": "src/cfaudit.ts",
+      "find": ".slice(0, 40) || \"none\"",
+      "replace": ".slice(0, 8) || \"none\"",
+      "why": "live alert 2026-11-13: the time-ordered start as a ref",
+      "test": {
+        "file": "test/cfaudit.test.ts",
+        "name": "live-1: a ref is the whole event id, so two events a second apart never share one"
+      },
+      "expect": "M:live-1"
     }
   ],
   "retired": []
