@@ -3852,7 +3852,7 @@
       "id": "cfmatch-m-r2-marker",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "(await append(copy, BY_RECORD, marked)) && ",
+      "find": "(await append(copy, BY_RECORD, (c: any) => (wellFormed(c) ? c : { complete_from: from, n: {} }))) && ",
       "replace": "",
       "why": "beec640b build b (r2 #7: the index is not created complete at activation)",
       "test": {
@@ -3878,8 +3878,8 @@
       "id": "cfmatch-m-r2-missing",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "if (!isO(ix) || !fin(ix.complete_from) || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;",
-      "replace": "if (!isO(ix) || !isO(ix.n)) return { evs: [] };",
+      "find": "!isO(ix) || !fin(ix.complete_from) || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;",
+      "replace": "!isO(ix) || !isO(ix.n)) return { evs: [] };",
       "why": "beec640b build b (r2 #7: a missing or malformed index is proof of absence)",
       "test": {
         "file": "test/cfmatch.test.ts",
@@ -3891,8 +3891,8 @@
       "id": "cfmatch-m-r2-entry",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "if (!isO(p) || !str(p.g) || !strs(p.mo)) return undefined;",
-      "replace": "if (!isO(p) || !str(p.g) || !strs(p.mo)) return { evs: [] };",
+      "find": "if (!isO(p) || !str(p.g) || !strs(p.mo) ||",
+      "replace": "if (!isO(p)) return { evs: [] }; if (",
       "why": "beec640b build b (r2 #7: a malformed index entry is proof of absence)",
       "test": {
         "file": "test/cfmatch.test.ts",
@@ -3904,8 +3904,8 @@
       "id": "cfmatch-m-r2-recreated",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "complete_from: c?.complete_from ?? T,",
-      "replace": "complete_from: c?.complete_from ?? epochs[0]?.boundary ?? T,",
+      "find": "complete_from: ok ? c!.complete_from : T,",
+      "replace": "complete_from: ok ? c!.complete_from : epochs[0]?.boundary ?? T,",
       "why": "beec640b build b (r2 #7: a recreated index claims the first epoch)",
       "test": {
         "file": "test/cfmatch.test.ts",
@@ -3990,6 +3990,97 @@
         "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
       },
       "expect": "the shape flag was not kept"
+    },
+    {
+      "id": "cfmatch-m-sec1-reset",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const ok = isO(c) && isO(c.n) && fin(c.complete_from);",
+      "replace": "const ok = isO(c);",
+      "why": "beec640b build b (sec 1: a malformed index keeps its completeness claim)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 1: an index object that exists but is malformed is reset complete only from now"
+      },
+      "expect": "a malformed index kept its old completeness claim"
+    },
+    {
+      "id": "cfmatch-m-sec2-never-ran",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!epochs.length && !m.ep && m.from === undefined && ix === undefined && !named) return",
+      "replace": "if (!epochs.length) return",
+      "why": "beec640b build b (sec 2: a lost activation record reads as never matched)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 2: with the activation record gone after matching ran, a revoked number is unknown, not never matched"
+      },
+      "expect": "a revoked number was settled while the activation record was gone"
+    },
+    {
+      "id": "cfmatch-m-sec3-missing",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "return named ? undefined : { evs: [] };",
+      "replace": "return { evs: [] };",
+      "why": "beec640b build b (sec 3: a named number missing from the index is settled)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 3: a revoked number records names as a tap is unknown when the complete index lacks it or names another tap"
+      },
+      "expect": "a named revoked number was settled"
+    },
+    {
+      "id": "cfmatch-m-sec3-other",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " || (named && p.g !== named)",
+      "replace": "",
+      "why": "beec640b build b (sec 3: a number the index gives to another tap is settled)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 3: a revoked number records names as a tap is unknown when the complete index lacks it or names another tap"
+      },
+      "expect": "a named revoked number was settled"
+    },
+    {
+      "id": "cfmatch-m-sec4-evidence",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const from = (await first().catch(() => false)) ? cand : T;",
+      "replace": "const from = cand;",
+      "why": "beec640b build b (sec 4: the index is marked complete without evidence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 4: without evidence of a first activation the index is complete only from now, and that is raised"
+      },
+      "expect": "an index with earlier month files was marked complete"
+    },
+    {
+      "id": "cfmatch-m-sec4-months",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if ((await readJson(copy, `${INDEX_PREFIX}${month(t, i)}.json`)) !== undefined) return false;",
+      "replace": "",
+      "why": "beec640b build b (sec 4: earlier month files are not looked for)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 4: without evidence of a first activation the index is complete only from now, and that is raised"
+      },
+      "expect": "an index with earlier month files was marked complete"
+    },
+    {
+      "id": "cfmatch-m-sec4-prior",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const prior = epochs.length > 0 || (saved !== undefined && !(validM(saved) && !saved.ep && saved.from === undefined));",
+      "replace": "const prior = epochs.length > 0;",
+      "why": "beec640b build b (sec 4: a corrupt prior matching state counts as a first activation)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 4: without evidence of a first activation the index is complete only from now, and that is raised"
+      },
+      "expect": "a corrupt prior matching state counted as a first activation"
     }
   ],
   "retired": []
