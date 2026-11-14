@@ -1049,3 +1049,54 @@ test("r2 #7: an index recreated after a loss is complete only from its recreatio
   assert.ok(w.m().done.includes("aaaaaaaa-rc"), "test setup: the tap was not acknowledged");
   assert.ok(JSON.parse(w.b.store.get("state/cfindex/by-record.json")!.body).complete_from > ON, "a recreated index claimed completeness from the first epoch");
 });
+
+// ---- security review on 967ce40 (four MEDIUM findings) ----
+
+test("sec 1: an index object that exists but is malformed is reset complete only from now", async () => {
+  const w = world({ "aaaaaaaa-s1": grant("cf.dns.list", T, { made: [id(1)], deleted: [id(1)] }) });
+  await w.run(T, 0);
+  w.b.store.set("state/cfindex/by-record.json", { body: JSON.stringify({ complete_from: ON, n: 5 }), etag: "bad" });
+  add(w, mc("s11", T + 10_000, id(1)), md("s12", T + 11_000, id(1)));
+  await w.run(T + 2 * H);
+  const ix = JSON.parse(w.b.store.get("state/cfindex/by-record.json")!.body);
+  assert.ok(ix.complete_from > ON && typeof ix.n === "object", "a malformed index kept its old completeness claim");
+});
+
+test("sec 2: with the activation record gone after matching ran, a revoked number is unknown, not never matched", async () => {
+  const w = world();
+  await w.run(T, 0);
+  w.b.store.delete(EPOCHS_KEY);
+  w.fx.revoked["66"] = "";
+  const r = await w.run(T + H);
+  assert.ok(!w.m().rj.includes("66"), "a revoked number was settled while the activation record was gone");
+  assert.equal(r.matching, "incomplete", "matching reported complete with the activation record gone");
+});
+
+test("sec 3: a revoked number records names as a tap is unknown when the complete index lacks it or names another tap", async () => {
+  const w = world();
+  await w.run(T, 0);
+  const ix = JSON.parse(w.b.store.get("state/cfindex/by-record.json")!.body);
+  ix.n["92"] = { g: "other-tap", mo: [] };
+  w.b.store.set("state/cfindex/by-record.json", { body: JSON.stringify(ix), etag: "x3" });
+  w.fx.revoked["91"] = "named-tap";
+  w.fx.revoked["92"] = "named-tap";
+  const r = await w.run(T + H);
+  assert.ok(!w.m().rj.includes("91") && !w.m().rj.includes("92"), "a named revoked number was settled without its tap in the index");
+  assert.equal(w.has("unavailable:index").length, 1, "the mismatch was not raised");
+  assert.equal(r.matching, "incomplete");
+});
+
+test("sec 4: without evidence of a first activation the index is complete only from now, and that is raised", async () => {
+  const w = world();
+  w.b.store.set(`state/cfindex/${new Date(T).toISOString().slice(0, 7)}.json`, { body: JSON.stringify({ "lost-tap": [] }), etag: "old" }); // an index from before
+  await w.run(ON + H, 0);
+  const ix = JSON.parse(w.b.store.get("state/cfindex/by-record.json")!.body);
+  assert.ok(ix.complete_from > ON, "an index with earlier month files was marked complete from the first epoch");
+  assert.equal(w.has("unavailable:index").length, 1, "the uncertain start was not raised");
+  const w2 = world();
+  await w2.run(ON + H, 0);
+  assert.equal(JSON.parse(w2.b.store.get("state/cfindex/by-record.json")!.body).complete_from, ON, "a true first activation was not marked complete");  const w3 = world(); // a corrupt saved matching state is not evidence of a first activation
+  w3.b.store.set(STATE_KEY, { body: JSON.stringify({ v: 1, bm: { t: ON - 2 * H, ids: [] }, recent: [], incidents: [], dropped: 0, week: { counts: {}, lag: 0 }, m: 5 }), etag: "corrupt" });
+  await w3.run(ON + H, 0);
+  assert.ok(JSON.parse(w3.b.store.get("state/cfindex/by-record.json")!.body).complete_from > ON, "a corrupt prior matching state counted as a first activation");
+});

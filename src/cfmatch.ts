@@ -7,6 +7,7 @@
 // state/cfindex/<YYYY-MM>.json (tap -> matched events) with
 // state/cfindex/by-record.json (record number -> month), written before a tap is acknowledged done (13.3). Alert words never hold a key id or a written name.
 import { GRANT_TTL_MS } from "./contract.ts";
+import { CF_FROM } from "./card.ts";
 import { judge, type Judged, type Who } from "./cfjudge.ts";
 import { ref, SETTLE_MS } from "./cfaudit.ts";
 import { STATE_KEY as RECORDS_KEY } from "./records.ts";
@@ -102,6 +103,7 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
   const epOf = (t: number) => epochs.filter((e) => e.boundary <= t).at(-1)?.n ?? 0;
   // Missing or corrupt matching state is a recovery from the first epoch, where unresolved work may start (13.1);
   // a checkpoint behind the bookmark, by time or by ids at its instant, is too (13.2).
+  const saved = s.m; // as loaded, before a recovery replaces it
   const m: M = validM(s.m) ? s.m : { t: epochs[0]?.boundary ?? s.bm.t, ids: [], ep: epochs.at(-1)?.n ?? 0, from: epochs[0]?.boundary, cov: 0, pend: [], expl: [], late: [], hc: {}, done: [], rev: [], rj: [], ix: [] };
   s.m = m;
   if (recovering(m, s.bm)) m.rp = { s: m.t, from: m.t, ids: [...m.ids], to: s.bm.t, runs: 0 }, await addEpoch(s.bm.t);
@@ -113,9 +115,17 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
   const hold = !fx || fx.replay_from !== undefined;
   if (fx && !hold) (m.since = fx.since), (m.gen = fx.gen), (m.cov = fx.covered_to);
   const cand = m.from ?? (fx ? fx.since + WARM_MS : undefined);
-  // The index starts complete from the first activation (13.3): created with it, so absence there is proof (Codex r2 #7).
-  const marked = (c: any) => (isO(c) ? c : { complete_from: cand, n: {} });
-  if (!m.ep && cand !== undefined && T - SETTLE_MS >= cand && (await append(copy, BY_RECORD, marked)) && (m.ep = await addEpoch(cand))) (m.from = cand), (on = true);
+  // The index starts complete from the first activation (13.3), so absence there is proof (Codex r2 #7) -- but only with
+  // positive evidence that this is the first: no epoch, no saved matching state that ever activated, no month file from
+  // the build's earliest possible month on. Otherwise it is complete only from now, and that is raised.
+  const prior = epochs.length > 0 || (saved !== undefined && !(validM(saved) && !saved.ep && saved.from === undefined));
+  const first = async () => { if (prior) return false; for (let t = T, i = 0; month(t, i) >= month(CF_FROM); i++) if ((await readJson(copy, `${INDEX_PREFIX}${month(t, i)}.json`)) !== undefined) return false; return true; };
+  const wellFormed = (c: any) => isO(c) && isO(c.n) && fin(c.complete_from);
+  if (!m.ep && cand !== undefined && T - SETTLE_MS >= cand) {
+    const from = (await first().catch(() => false)) ? cand : T;
+    if (from === T) add("unavailable:index", "matching incomplete: the index of matched taps could not be shown complete from the first activation");
+    if ((await append(copy, BY_RECORD, (c: any) => (wellFormed(c) ? c : { complete_from: from, n: {} }))) && (m.ep = await addEpoch(cand))) (m.from = cand), (on = true);
+  }
   const known = (id: string) => [m.pend, m.expl, m.late].some((l) => l.some((x) => x.id === id));
   const counts: Record<string, number> = {};
   const bump = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
@@ -193,7 +203,7 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
       if (!gone.length || (await index(gone))) m.expl = m.expl.filter((x) => !out.has(x.g!));
       m.ux = false;
       for (const n of Object.keys(fx.revoked)) if (!m.rj.includes(n)) {
-        const hit = await lookup(n); // unknown: unresolved, matching incomplete, tried again next run
+        const hit = await lookup(n, fx.revoked[n]); // unknown: unresolved, matching incomplete, tried again next run
         if (hit === undefined) { m.ux = true; add("unavailable:index", "matching incomplete: the index of matched taps is missing, unreadable or not complete, so records found bad cannot be settled"); continue; }
         for (const ev of hit.evs) unexplain(ev); // a number the complete index never names was never a matched tap's: nothing to re-judge
         m.rj.push(n);
@@ -263,7 +273,8 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
       for (const ev of evs) if (!(next[ev.g!] ?? []).some((x) => x.id === ev.id)) next[ev.g!] = [...(next[ev.g!] ?? []), { ...ev, i: 1 }];
       return next;
     })) && (await append<{ complete_from: number; n: Record<string, { g: string; mo: string[] }> }>(copy, BY_RECORD, (c) => {
-      const next = { complete_from: c?.complete_from ?? T, n: { ...c?.n } }; // recreated after a loss: complete only from now
+      const ok = isO(c) && isO(c.n) && fin(c.complete_from); // recreated or malformed: complete only from now
+      const next = { complete_from: ok ? c!.complete_from : T, n: ok ? { ...c!.n } : {} };
       for (const n of ns) { const g = fx!.index[n], had = next.n[n]?.mo ?? []; next.n[n] = { g, mo: had.includes(mo) ? had : [...had, mo] }; }
       return next;
     }));
@@ -272,14 +283,14 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
   }
   /** The tap a record number belongs to and its matched events, at any age. No tap only when nothing was ever matched, or the
    * index exists, is well-formed and is complete from the first epoch; anything else is unknown (undefined). */
-  async function lookup(n: string): Promise<{ g?: string; evs: Ev[] } | undefined> {
+  async function lookup(n: string, named: string): Promise<{ g?: string; evs: Ev[] } | undefined> {
     try {
-      if (!epochs.length) return { evs: [] };
       const ix = await readJson(copy, BY_RECORD);
-      if (!isO(ix) || !fin(ix.complete_from) || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;
+      if (!epochs.length && !m.ep && m.from === undefined && ix === undefined && !named) return { evs: [] }; // matching never ran
+      if (!epochs.length || !isO(ix) || !fin(ix.complete_from) || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;
       const p = ix.n[n];
-      if (p === undefined) return { evs: [] };
-      if (!isO(p) || !str(p.g) || !strs(p.mo)) return undefined;
+      if (p === undefined) return named ? undefined : { evs: [] }; // records names a tap the complete index lacks: unknown
+      if (!isO(p) || !str(p.g) || !strs(p.mo) || (named && p.g !== named)) return undefined;
       const evs: Ev[] = [];
       for (const mo of p.mo) { const f = await readJson(copy, `${INDEX_PREFIX}${mo}.json`); if (!isO(f)) return undefined; evs.push(...(Array.isArray(f[p.g]) ? f[p.g] : [])); }
       return { g: p.g, evs };
