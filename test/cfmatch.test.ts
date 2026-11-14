@@ -752,7 +752,7 @@ test("#6: an unfinished replay never judges absence or acknowledges a tap it has
 test("#7: a lookup of a revoked record has no age cap, and an unreadable index keeps matching incomplete", async () => {
   const w = world();
   await w.run(T, 0);
-  w.b.store.set("state/cfindex/by-record.json", { body: JSON.stringify({ complete_from: ON, n: { "41": { g: "old-tap-1", mo: ["2023-01"] }, "42": { g: "old-tap-2", mo: ["2023-02"] } } }), etag: "br" });
+  w.b.store.set("state/cfindex/by-record.json", { body: JSON.stringify({ complete_from: ON, epoch_boundary: ON, n: { "41": { g: "old-tap-1", mo: ["2023-01"] }, "42": { g: "old-tap-2", mo: ["2023-02"] } } }), etag: "br" });
   w.b.store.set("state/cfindex/2023-01.json", { body: JSON.stringify({ "old-tap-1": [{ id: "anc1", a: "create", k: id(1), t: T - 1000 * 86_400_000, ok: true, ep: 1, g: "old-tap-1", i: 1 }] }), etag: "m1" });
   w.fx.revoked["41"] = "";
   w.fx.revoked["42"] = ""; // its month file is gone: unreadable
@@ -783,7 +783,7 @@ test("S1/S2: a revoked number is settled as never matched only by a complete ind
   let r = await w.run(T + H);
   assert.ok(w.m().rj.includes("77"), "a number the complete index never names was not settled");
   assert.equal(r.matching, "active");
-  for (const [name, body] of [["missing", undefined], ["malformed", "{\"n\": 5}"], ["late-started", JSON.stringify({ complete_from: T + H, n: {} })], ["entry", JSON.stringify({ complete_from: ON, n: { "85": 5 } })]] as const) {
+  for (const [name, body] of [["missing", undefined], ["malformed", "{\"n\": 5}"], ["late-started", JSON.stringify({ complete_from: T + H, epoch_boundary: ON, n: {} })], ["entry", JSON.stringify({ complete_from: ON, epoch_boundary: ON, n: { "85": 5 } })]] as const) {
     const n = `8${name.length}`;
     if (body === undefined) w.b.store.delete("state/cfindex/by-record.json"); else w.b.store.set("state/cfindex/by-record.json", { body, etag: name });
     w.fx.revoked[n] = "";
@@ -1099,4 +1099,40 @@ test("sec 4: without evidence of a first activation the index is complete only f
   w3.b.store.set(STATE_KEY, { body: JSON.stringify({ v: 1, bm: { t: ON - 2 * H, ids: [] }, recent: [], incidents: [], dropped: 0, week: { counts: {}, lag: 0 }, m: 5 }), etag: "corrupt" });
   await w3.run(ON + H, 0);
   assert.ok(JSON.parse(w3.b.store.get("state/cfindex/by-record.json")!.body).complete_from > ON, "a corrupt prior matching state counted as a first activation");
+});
+
+test("r3 SR2 (a): a surviving month file with matching state, epochs and index lost: a bare revoked number is unknown", async () => {
+  const w = world();
+  await w.run(T, 0);
+  const mo = new Date(T).toISOString().slice(0, 7);
+  w.b.store.set(`state/cfindex/${mo}.json`, { body: JSON.stringify({ "old-tap": [] }), etag: "kept" });
+  w.b.store.delete(EPOCHS_KEY);
+  w.b.store.delete("state/cfindex/by-record.json");
+  const s = state(w.b); delete s.m;
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "lost-m" });
+  w.fx.since = T; // effects restarted: matching is warming up again
+  w.fx.revoked["55"] = "";
+  const r = await w.run(T + H);
+  assert.ok(!w.m().rj.includes("55"), "a revoked number was settled as never matched despite a surviving month file");
+  assert.equal(r.matching, "incomplete");
+});
+
+test("r3 SR4 (b): an index recreated on day 5, then matching state and epochs lost and re-activated: an absent old record is unknown", async () => {
+  const w = world({ "aaaaaaaa-r5": grant("cf.dns.list", T + 4 * 24 * H, { made: [id(1)], deleted: [id(1)] }) });
+  await w.run(T, 0);
+  w.b.store.delete("state/cfindex/by-record.json"); // lost, then recreated on day 5 by the next acknowledgement
+  add(w, mc("r51", T + 4 * 24 * H + 10_000, id(1)), md("r52", T + 4 * 24 * H + 11_000, id(1)));
+  await w.run(T + 5 * 24 * H);
+  assert.ok(JSON.parse(w.b.store.get("state/cfindex/by-record.json")!.body).complete_from > ON, "test setup: the index was not recreated partial");
+  add(w, shapes.view("r5v", T + 5 * 24 * H + 3 * H, id(77))); // the bookmark moves past day 5
+  await w.run(T + 5 * 24 * H + 4 * H);
+  w.b.store.delete(EPOCHS_KEY);
+  const s = state(w.b); delete s.m;
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "lost-m2" });
+  w.fx.since = T + 6 * 24 * H; // effects restarted after the loss
+  await w.run(T + 6 * 24 * H + WARM_MS + H); // re-activated at a later boundary
+  w.fx.revoked["3"] = "";
+  const r = await w.run(T + 6 * 24 * H + WARM_MS + 2 * H);
+  assert.ok(!w.m().rj.includes("3"), "a newer epoch made a partial index complete, settling an old record as never matched");
+  assert.equal(r.matching, "incomplete");
 });
