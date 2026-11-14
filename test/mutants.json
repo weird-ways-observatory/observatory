@@ -3852,7 +3852,7 @@
       "id": "cfmatch-m-r2-marker",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "(await append(copy, BY_RECORD, (c: any) => (wellFormed(c) ? c : { complete_from: from, n: {} }))) && ",
+      "find": "(await append(copy, BY_RECORD, (c: any) => (wellFormed(c) ? c : { complete_from: from, epoch_boundary: cand, n: {} }))) && ",
       "replace": "",
       "why": "beec640b build b (r2 #7: the index is not created complete at activation)",
       "test": {
@@ -3878,7 +3878,7 @@
       "id": "cfmatch-m-r2-missing",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "!isO(ix) || !fin(ix.complete_from) || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;",
+      "find": "!isO(ix) || !fin(ix.complete_from) || ix.epoch_boundary !== epochs[0].boundary || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;",
       "replace": "!isO(ix) || !isO(ix.n)) return { evs: [] };",
       "why": "beec640b build b (r2 #7: a missing or malformed index is proof of absence)",
       "test": {
@@ -4008,7 +4008,7 @@
       "id": "cfmatch-m-sec2-never-ran",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "if (!epochs.length && !m.ep && m.from === undefined && ix === undefined && !named) return",
+      "find": "if (!epochs.length && ix === undefined && !named && (await firstStart())) return",
       "replace": "if (!epochs.length) return",
       "why": "beec640b build b (sec 2: a lost activation record reads as never matched)",
       "test": {
@@ -4047,7 +4047,7 @@
       "id": "cfmatch-m-sec4-evidence",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": "const from = (await first().catch(() => false)) ? cand : T;",
+      "find": "const from = (await firstStart()) ? cand : T;",
       "replace": "const from = cand;",
       "why": "beec640b build b (sec 4: the index is marked complete without evidence)",
       "test": {
@@ -4081,6 +4081,58 @@
         "name": "sec 4: without evidence of a first activation the index is complete only from now, and that is raised"
       },
       "expect": "a corrupt prior matching state counted as a first activation"
+    },
+    {
+      "id": "cfmatch-m-r3-sr2-first",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "&& !named && (await firstStart())) return",
+      "replace": "&& !named && true) return",
+      "why": "beec640b build b (r3 SR2: the never-matched shortcut skips the first-start evidence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r3 SR2 (a): a surviving month file with matching state, epochs and index lost: a bare revoked number is unknown"
+      },
+      "expect": "a revoked number was settled as never matched despite a surviving month file"
+    },
+    {
+      "id": "cfmatch-m-r3-sr4-epoch",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " || ix.epoch_boundary !== epochs[0].boundary",
+      "replace": "",
+      "why": "beec640b build b (r3 SR4: an index is accepted for an epoch it was not made for)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r3 SR4 (b): an index recreated on day 5, then matching state and epochs lost and re-activated: an absent old record is unknown"
+      },
+      "expect": "a newer epoch made a partial index complete"
+    },
+    {
+      "id": "cfmatch-m-r3-sr4-restamp",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(wellFormed(c) ? c : { complete_from: from, epoch_boundary: cand, n: {} })",
+      "replace": "(wellFormed(c) ? { ...c, epoch_boundary: epochs[0]?.boundary ?? cand } : { complete_from: from, epoch_boundary: cand, n: {} })",
+      "why": "beec640b build b (r3 SR4: activation re-stamps an existing index for the new epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r3 SR4 (b): an index recreated on day 5, then matching state and epochs lost and re-activated: an absent old record is unknown"
+      },
+      "expect": "a newer epoch made a partial index complete"
+    },
+    {
+      "id": "cfmatch-m-r3-stamp",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "epoch_boundary: cand, n: {} })",
+      "replace": "epoch_boundary: undefined, n: {} })",
+      "why": "beec640b build b (r3 SR4: a new index is not bound to its epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "a number the complete index never names was not settled"
     }
   ],
   "retired": []
