@@ -16,7 +16,9 @@ import { DAY_CAP, GRANT_TTL_MS, MAX_STORED_BYTES, ROOT, sealed, sha256, SKEW_MS,
 import { isOpStage, nameOf, OPS_FROM, poolUse, validateOp, type AnyStage, type Op, type OpResult } from "./ops.ts";
 import { badOp, capacityFindings, cardOpen, countBytes, fp, loadCards, loadOps, measures, onApproval, onCardApproval, onCardRequest, onCardResult, onOp, onRequest, onResult, poolFindings, pruneDays, settle, settleCards, type CardsState, type OpsState } from "./runcheck.ts";
 import { readLockLength, type LockEnv } from "./lock.ts";
-import { CF_FROM, cfRefusal } from "./card.ts";
+import { CF_FROM, CF_JOBS, cfRefusal } from "./card.ts";
+import { STATE_KEY as CFAUDIT_KEY } from "./cfaudit.ts";
+import { EPOCHS_KEY } from "./cfmatch.ts";
 
 export interface RecordsEnv extends AlertEnv, LockEnv {
   RECORDS?: Pick<R2Bucket, "list" | "get">; // read and list only: this job never writes there
@@ -46,6 +48,60 @@ export const MAX_DROPPED = 5_000; // ids of incidents with no room, kept so the 
 export const MAX_SWEEP_READS = 20; // record numbers with extra names the daily count reads
 export const TAIL_PAGES = 5; // pages of names after the bookmark listed to prove nothing higher exists (X2)
 export const REMIND_DAY = 1, REMIND_HOUR = 14; // UTC Monday 14:00 (8 am Central): the weekly list of what is open
+// Card beec640b build b, the records side (studio-os docs/specifications/trust-but-verify/REFINE-beec640b-build-b.md
+// v3.2, sections 4.1-4.3, 4.6 and 12.2, where 12 overrides): `effects`, the eligible request-approval-result chain of
+// every Cloudflare-master tap, kept inside this job's state and saved with its bookmark in one conditional save, so
+// the two never disagree. cfaudit reads it, never writes it. A stage is eligible only when its own record raised no
+// finding and the stages before it are eligible; any finding on any record of the grant taints it for good.
+export const WRITE_MARGIN_MS = 2 * 60_000, EFFECTS_KEEP_MS = 72 * 3_600_000, INDEX_KEEP_MS = 30 * 86_400_000, MAX_EFFECTS = 2_000;
+interface Stamp { n: number; sha: string; at: number }
+interface Effect { job: string; path: "card" | "ordinary"; req?: Stamp; appr?: Stamp; res?: Stamp; cf?: { made: string[]; deleted: string[] } | "unknown" | "none"; tainted?: string }
+// `index`: record number -> grant, for live entries and 30 days after retirement (later revocation lookups).
+// `revoked`: record number -> retired grant, for a record found bad after its grant was retired (12.2), kept with the index;
+// past the index, "" (13.3): cfaudit resolves the number from its monthly index, kept while the finding stands.
+interface Effects { gen: number; since: number; covered_to: number; grants: Record<string, Effect>; retired: Record<string, number>; index: Record<string, string>; revoked: Record<string, string>; replay_from?: number }
+// Finding kinds that name one record number; any other finding names its grant second (`kind:grant[:n]`).
+const NUMBERED = /^(?:bad|foreign|forged|unreadable|missing|unsigned|duplicate-number|sweep:unreadable|sweep:crowded):(\d+)(?::|$)/;
+/** What a finding id is about: a live entry (by grant or kept record number), or a retired grant's kept record number. */
+function hitBy(fx: Effects, fid: string): { live?: string; retired?: { n: string; grant: string } } {
+  const g = fid.split(":")[1], n = NUMBERED.exec(fid)?.[1], byN = n !== undefined && Object.hasOwn(fx.index, n) ? fx.index[n] : undefined;
+  if (Object.hasOwn(fx.grants, g)) return { live: g };
+  if (byN !== undefined && Object.hasOwn(fx.grants, byN)) return { live: byN };
+  return byN !== undefined ? { retired: { n: n!, grant: byN } } : {};
+}
+/** 12.5: the first record number uploaded at or after `t`; a number that cannot be listed counts as later, so the
+ * search errs early (records before the floor are only read again, never skipped). */
+async function firstAt(bucket: Pick<R2Bucket, "list">, hi: number, t: number): Promise<number> {
+  let lo = 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1, c = (await namesAt(bucket, `${ROOT}${pad(mid)}.`)).cands[0]; if (!c || c.uploaded.getTime() >= t) hi = mid; else lo = mid + 1; }
+  return lo;
+}
+/**
+ * One tap record into `effects` (4.3). `bad`: the kind of the first finding this record raised. A new entry starts
+ * only at an eligible request of a CF_JOBS job. False: a new entry had no room (the caller sets replay_from).
+ */
+function project(fx: Effects, n: number, grant: string, stage: Stage, job: string | undefined, rec: Record<string, unknown> | undefined, sha: string | undefined, at: number, bad: string | undefined): boolean {
+  let e = Object.hasOwn(fx.grants, grant) ? fx.grants[grant] : undefined;
+  if (!e) {
+    if (stage !== "request" || bad || !job || !CF_JOBS.includes(job)) return true;
+    if (Object.keys(fx.grants).length >= MAX_EFFECTS) return false;
+    e = fx.grants[grant] = { job, path: "ordinary" };
+  }
+  fx.index[n] = grant;
+  const slot = stage === "request" ? "req" : stage === "approval" ? "appr" : stage === "result" ? "res" : undefined;
+  if (slot && e[slot]?.n === n) return true; // read again after a rewound bookmark: already projected
+  if (bad || e.tainted) return (e.tainted ??= bad), true;
+  if ((slot === "appr" && !e.req) || (slot === "res" && !e.appr) || (slot && e[slot])) return (e.tainted = `${stage} out of order`), true;
+  if (!slot || !rec || !sha) return true; // an honest verdict: nothing to keep
+  if (slot === "res") {
+    const lists = rec.cf && typeof rec.cf === "object" ? (rec.cf as { made: string[]; deleted: string[] }) : undefined;
+    if (lists && [lists.made, lists.deleted].some((l) => new Set(l).size !== l.length)) return (e.tainted = "a cf list repeats a key id"), true;
+    e.cf = rec.cf === "unknown" ? "unknown" : lists ? { made: [...lists.made], deleted: [...lists.deleted] } : "none";
+  }
+  if (slot === "appr") e.path = rec.approval_kind === "card/v1" ? "card" : "ordinary";
+  e[slot] = { n, sha, at };
+  return true;
+}
 
 /** One finding: `id` is stable across hours so Ben hears about it once. Text never holds writer-chosen words. */
 export interface Finding { id: string; text: string }
@@ -55,7 +111,7 @@ interface Open { job: string; req: string; at: number; stages: Stage[] }
 // `sealed`: numbers from the pin's start up to `to` were confirmed signed under the pin with this key.
 // `held`/`snap` come only from the checker before signing; they are read once, never saved again.
 // `alerted`/`queued` come only from the checker before af0e4a2f: read once to carry what was told.
-interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedFull?: boolean; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[]; ops?: OpsState; cards?: CardsState }
+interface State { sealed?: { key: string; to: number }; held?: unknown[]; snap?: { seq: number; open: Record<string, Open>; days: Record<string, number> }; seq?: number; open?: Record<string, Open>; days?: Record<string, number>; swept?: Finding[]; incidents?: Incident[]; dropped?: string[]; droppedFull?: boolean; unverifiedTold?: boolean; reminded?: string; alerted?: string[]; queued?: Finding[]; ops?: OpsState; cards?: CardsState; effects?: Partial<Effects> }
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -67,7 +123,7 @@ const pad = (n: number) => String(n).padStart(12, "0");
 // How a grant id appears in alerts (runcheck.ts fp): a fingerprint, never the id. Grant findings also name the record number.
 export { fp };
 // Worst first: what ran unrecorded or unchecked before what is merely malformed.
-const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "card-bad", "card-incomplete", "card-unsettled", "card-unknown", "card-late", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "op-unsettled", "approval-first", "mismatch", "duplicate", "duplicate-number", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
+const RANK = ["forged", "missing", "unsigned", "unreadable", "unrecorded", "unapproved", "card-bad", "card-incomplete", "card-unsettled", "card-unknown", "card-late", "op-uncovered", "op-unlinked", "op-incomplete", "op-late", "op-unsettled", "approval-first", "mismatch", "duplicate", "duplicate-number", "retired-bad", "foreign", "gap", "lock", "runway", "capacity", "cap", "pool", "backlog", "verdict-first", "bad", "sweep", "junk", "stray"];
 const LOW = RANK.indexOf("junk"); // junk and stray: cheap for a writer to make by the thousand
 const kind = (id: string) => id.split(":")[0];
 const rank = (f: Finding) => { const i = RANK.indexOf(kind(f.id)); return i < 0 ? RANK.length : i; };
@@ -244,9 +300,10 @@ export type RecordsVerdict = "ran" | "unverified";
 /** One hour's run: read what is new, judge, alert once per new finding that is delivered, keep state, ping. `pin` null: no pin. */
 /** `opsFrom`: ops.ts OPS_FROM, a reviewed constant (never an env var); tests pass their own, as with `pin`. */
 export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Promise<Response>, now: Date, pin: Pin | null = PIN ?? null, opsFrom: number | undefined = OPS_FROM, cfFrom: number = CF_FROM) {
-  let prev: State = {};
+  let prev: State = {}, etag: string | null = null;
   try {
     const saved = await env.COPY.get(STATE_KEY);
+    etag = saved?.etag ?? null; // the save is conditional on this (4.1): a run that lost a race writes nothing
     if (saved) prev = JSON.parse(await saved.text());
   } catch { /* an unreadable state re-reads from the start and re-alerts at worst: safer than silence */ }
   // No prototype: a grant id can never reach a built-in object property.
@@ -263,6 +320,25 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   }
   const ops = loadOps(prev.ops); // run ops (card 1a272a5c): defaults empty for a state from before
   const cards = loadCards(prev.cards); // card approvals (card 586da182): the same
+  const pe = prev.effects && typeof prev.effects === "object" ? prev.effects : {}, num = (x: unknown, d: number) => (Number.isFinite(x) ? (x as number) : d);
+  let fxErr: string | undefined; // a throw in the effects bookkeeping: the run is unverified, everything else goes on
+  const fx: Effects = { gen: num(pe.gen, 0), since: num(pe.since, now.getTime()), covered_to: num(pe.covered_to, 0), grants: bare<Effect>(pe.grants), retired: bare<number>(pe.retired), index: bare<string>(pe.index), revoked: bare<string>(pe.revoked), ...(Number.isInteger(pe.replay_from) ? { replay_from: pe.replay_from } : {}) };
+  // cfaudit's matching state, read once: `done` retires entries (12.2); `t`, `pend` and `gen` place a rebuild (12.5).
+  const ca = await env.COPY.get(CFAUDIT_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.m : undefined)).catch(() => undefined);
+  try {
+    // 12.5: effects lost after records were read (a revert's save dropped them), or older than cfaudit last saw: a
+    // recovery, never a fresh start. The chains still needed are rebuilt by the replay below, from the first record at
+    // or after the floor: matching's checkpoint or oldest waiting event (else the first epoch) less a grant's life.
+    if (env.RECORDS && ((seq > 0 && !(pe.grants && typeof pe.grants === "object")) || (Number.isInteger(ca?.gen) && fx.gen < ca.gen))) {
+      const last = await env.COPY.get(EPOCHS_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.epochs?.[0]?.boundary : undefined)); // the first epoch: the same floor as the audit replay (Codex r2 #4/#5)
+      // Every outstanding obligation: the checkpoint, an unfinished replay, waiting, late and not-yet-indexed matched events.
+      const owed = [ca?.t, ca?.rp?.s, ...[ca?.pend, ca?.late, ca?.expl?.filter((x: { i?: 1 }) => !x.i)].flatMap((l) => (Array.isArray(l) ? l.map((x: { t: number }) => x.t) : []))].filter(Number.isFinite);
+      const at = Number.isFinite(ca?.t) ? Math.min(...owed) : last;
+      if (Number.isFinite(at)) Object.assign(fx, { gen: Math.max(fx.gen, num(ca?.gen, 0)), since: at - GRANT_TTL_MS - 3_600_000, covered_to: 0, grants: bare<Effect>({}), retired: bare<number>({}), index: bare<string>({}), revoked: bare<string>({}), replay_from: await firstAt(env.RECORDS, seq + 1, at - GRANT_TTL_MS - SKEW_MS) });
+    }
+  } catch {
+    fxErr ??= "the effects list could not be rebuilt";
+  }
   let ended = false, tailClear = false; // the read reached an empty next number; nothing higher is listed
   let swept = Array.isArray(prev.swept) ? prev.swept.filter(isFinding).filter((f) => !OLD_FOREIGN.test(f.id)).slice(0, MAX_SWEPT + 1) : [];
   const findings: Finding[] = [];
@@ -321,7 +397,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
       // Each step asks for the next expected number by name, so names elsewhere in the bucket
       // (strays, planted high numbers) cost nothing and can never hide the records still to come.
       while (checked < PAGE) {
-        const next = seq + 1, at = `${ROOT}${pad(next)}.`;
+        const next = seq + 1, at = `${ROOT}${pad(next)}.`, mark = findings.length;
         const here = await namesAt(env.RECORDS, at);
         for (const k of here.junk) findings.push(await junk(k));
         if (here.capped) {
@@ -382,6 +458,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
         const m = nameOf(o.key)!;
         const grant = m.grant, stage = m.stage;
         const shown = await fp(grant);
+        let tapRec: { job: string; record: Record<string, unknown>; sha: string; at: number } | undefined; // for effects
         try {
           if (body === undefined && o.size > MAX_STORED_BYTES) {
             findings.push({ id: `bad:${next}`, text: `record ${next} (${shown}/${stage}): ${o.size} bytes, over ${MAX_STORED_BYTES}` });
@@ -408,6 +485,7 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
             } else {
               // Signed time, so tap reservation ages match the recorder (W1; Codex r1 #2).
               const at = Date.parse(r.env!.recorded_at);
+              tapRec = { job: r.job!, record: r.record!, sha: r.env!.sha256, at };
               const f = checkOrder(open, grant, stage, r.job!, r.request, r.env!.sha256, at, next, shown);
               // `cf` (card 139071ea R6): every stage of every tap grant, card or ordinary, timed by its request's signed recorded_at.
               const noCf = f ? undefined : cfRefusal(r.record!, open[grant].at, cfFrom);
@@ -420,6 +498,13 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
           }
         } catch {
           findings.push({ id: `bad:${next}`, text: `record ${next} (${shown}/${stage}): could not be checked` });
+        }
+        // Effects (4.3): every finding pushed while this number was read is this record's; held back while replaying (12.2).
+        try {
+          if (!isOpStage(stage) && fx.replay_from === undefined && !project(fx, next, grant, stage, tapRec?.job, tapRec?.record, tapRec?.sha, tapRec?.at ?? 0, findings.length > mark ? kind(findings[mark].id) : undefined)) fx.replay_from = next;
+        } catch {
+          fx.replay_from ??= next; // projected again later, never skipped
+          fxErr ??= `the effects list could not record record ${next}`;
         }
         seq = next;
         const d = day(o.uploaded);
@@ -450,6 +535,27 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   findings.push(...poolFindings(ops, day(now), use, DAY_CAP), ...capacityFindings(ops, now.getTime(), use.reserved_bytes));
   pruneDays(ops, now.getTime());
   findings.push(...swept);
+  // Later findings (the daily count, card settling) taint the live entry they name; then retire what cfaudit
+  // acknowledged as done (m.done, 12.2) once its result is 72 h old (no result: from its grant's end).
+  // A finding on a retired grant's record is kept for cfaudit to re-judge (revoked) and raised once (12.2).
+  try {
+    const standing = new Set<string>();
+    for (const f of [...findings]) {
+      const h = hitBy(fx, f.id), n = NUMBERED.exec(f.id)?.[1];
+      if (n !== undefined) standing.add(n);
+      if (h.live) fx.grants[h.live].tainted ??= kind(f.id);
+      else if (h.retired) (fx.revoked[h.retired.n] = h.retired.grant), findings.push({ id: `retired-bad:${h.retired.n}`, text: `a record found bad after its judgments were retired: record ${h.retired.n}` });
+      else if (n !== undefined) fx.revoked[n] ??= ""; // any age (13.3)
+    }
+    const done = new Set(Array.isArray(ca?.done) ? ca.done : []);
+    for (const [g, e] of Object.entries(fx.grants)) if (now.getTime() - (e.res?.at ?? (e.req?.at ?? 0) + GRANT_TTL_MS) > EFFECTS_KEEP_MS && done.has(g)) delete fx.grants[g], (fx.retired[g] = now.getTime());
+    for (const [n, g] of Object.entries(fx.index)) if (!Object.hasOwn(fx.grants, g) && !(now.getTime() - (fx.retired[g] ?? -Infinity) <= INDEX_KEEP_MS)) delete fx.index[n];
+    // A number cfaudit has not confirmed handling (m.rj) is kept, raised again or not; once confirmed, kept only while it stands.
+    for (const n of Object.keys(fx.revoked)) if (!Object.hasOwn(fx.index, n) && !standing.has(n) && (Array.isArray(ca?.rj) && ca.rj.includes(n))) delete fx.revoked[n];
+    for (const [g, t] of Object.entries(fx.retired)) if (now.getTime() - t > INDEX_KEEP_MS) delete fx.retired[g];
+  } catch {
+    fxErr ??= "the effects list could not be updated after the read";
+  }
   // Only numbers the main read itself checked under the key join the signed range; never after a
   // re-check that stopped short (it would mark unchecked numbers as signed).
   if (key && sealDone) sealedTo = Math.max(sealedTo, seq);
@@ -508,6 +614,31 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   }
   listed.sort((x, y) => rank(x) - rank(y));
   const fresh = listed.filter((i) => !i.told);
+  try {
+    // Replay (12.2): records the cap held back are re-read in order once there is room; a record's findings are the
+    // standing incidents that name it (all of them, when the list overflowed past telling them apart).
+    for (let reads = 0; env.RECORDS && fx.replay_from !== undefined && fx.replay_from <= seq && reads < PAGE; reads++) {
+      const n = fx.replay_from, cands = (await namesAt(env.RECORDS, `${ROOT}${pad(n)}.`).catch(() => undefined))?.cands;
+      if (!cands) break;
+      const one = key && n >= from ? await sealsAt(env.RECORDS, key, n, cands).then((s) => (s.seals.length === 1 && !s.unreadable ? s.seals[0] : undefined)) : cands.length === 1 ? { o: cands[0], body: await env.RECORDS.get(cands[0].key).then((b) => (b ? b.text() : undefined), () => undefined) } : undefined;
+      if (!one || one.body === undefined) break; // stays set: matching incomplete, retried next hour
+      const m = nameOf(one.o.key)!;
+      if (!isOpStage(m.stage)) {
+        const r = await checkStored(n, m.grant, m.stage, one.o.uploaded, one.body);
+        const ids = [...list.keys(), ...dropped], at = (i: string) => NUMBERED.exec(i)?.[1] === String(n) || (i.split(":")[1] === m.grant && i.split(":")[2] === String(n));
+        const own = r.finding ? "bad" : droppedFull ? "incidents overflow" : ids.find(at), onGrant = ids.find((i) => i.split(":")[1] === m.grant);
+        if (!project(fx, n, m.grant, m.stage as Stage, r.job, r.record, r.env?.sha256, r.env ? Date.parse(r.env.recorded_at) : 0, own && kind(own))) break;
+        if (onGrant && Object.hasOwn(fx.grants, m.grant)) fx.grants[m.grant].tainted ??= kind(onGrant);
+      }
+      fx.replay_from = n + 1;
+    }
+    if (fx.replay_from !== undefined && fx.replay_from > seq) delete fx.replay_from;
+  } catch {
+    fxErr ??= "the effects list could not replay held-back records";
+  }
+  if (fxErr) (verdict = "unverified"), (reason = `${fxErr}; matching stays incomplete until it is fixed${reason ? `; ${reason}` : ""}`);
+  // Coverage clock (4.2): only a run that read to the end, under the hourly page, moves it; never backwards.
+  if (verdict === "ran" && ended && tailClear && checked < PAGE) fx.covered_to = Math.max(fx.covered_to, now.getTime() - SKEW_MS - WRITE_MARGIN_MS);
   const ping = env.PING_URL_RECORDS;
 
   // Until Ben creates this job's check, it only logs (like fresh.ts): no alert, no light.
@@ -543,10 +674,12 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
     }
   }
   if (verdict === "ran") reason = `${checked} new records read; ${listed.length} open incident${listed.length === 1 ? "" : "s"}${listed.length ? `: ${listed.map((i) => i.text).join("; ")}` : ""}`;
-  try {
-    await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull, unverifiedTold, reminded, ops, cards } satisfies State));
-  } catch {
-    reason = `records state could not be saved; ${reason}`;
+  // One save, conditional on the etag read at the start (create-if-absent when there was none): R2 answers null
+  // when another run saved first, and this run then writes nothing (as cfaudit.ts Saver).
+  const onlyIf = etag ? { etagMatches: etag } : new Headers({ "If-None-Match": "*" });
+  const put = await env.COPY.put(STATE_KEY, JSON.stringify({ sealed: key ? { key: pin!.key, to: sealedTo } : undefined, seq, open, days, swept, incidents: listed, dropped: [...dropped], droppedFull, unverifiedTold, reminded, ops, cards, effects: { ...fx, gen: fx.gen + 1 } } satisfies State), { onlyIf }).catch(() => undefined);
+  if (!put) {
+    reason = `records state could not be saved${put === null ? " (another run saved first; this run wrote nothing)" : ""}; ${reason}`;
     verdict = "unverified";
   }
 

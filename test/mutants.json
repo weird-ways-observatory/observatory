@@ -2352,6 +2352,1787 @@
         "name": "checker: cf on a request, approval or verdict, or on a non-master result, is flagged, before or after CF_FROM"
       },
       "expect": "cf findings differ from the request, approval, verdict and non-master records"
+    },
+    {
+      "id": "cfmatch-taint-on-finding",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (bad || e.tainted) return (e.tainted ??= bad), true;",
+      "replace": "if (e.tainted) return true;",
+      "why": "beec640b build b (records effects): a record with a finding still makes its stage eligible",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a finding at any stage taints the grant and stops its later stages; a bad request gets no entry"
+      },
+      "expect": "a stage after a bad approval was kept"
+    },
+    {
+      "id": "cfmatch-own-findings",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "findings.length > mark ? kind(findings[mark].id) : undefined",
+      "replace": "undefined",
+      "why": "beec640b build b (records effects): the record's own findings are not passed to eligibility",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a finding at any stage taints the grant and stops its later stages; a bad request gets no entry"
+      },
+      "expect": "a request with a finding made an entry"
+    },
+    {
+      "id": "cfmatch-dup-id",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "new Set(l).size !== l.length",
+      "replace": "l.length < 0",
+      "why": "beec640b build b (records effects): a repeated key id in cf no longer taints",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a cf list with a repeated key id taints the grant"
+      },
+      "expect": "a repeated key id in a cf list did not taint"
+    },
+    {
+      "id": "cfmatch-cf-jobs-only",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "!job || !CF_JOBS.includes(job)",
+      "replace": "!job",
+      "why": "beec640b build b (records effects): non-CF jobs get entries",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: an honest tap per Cloudflare-master job and path is kept whole; other jobs get no entry"
+      },
+      "expect": "the effects entries are not exactly the honest master taps"
+    },
+    {
+      "id": "cfmatch-card-path",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "e.path = rec.approval_kind === \"card/v1\" ? \"card\" : \"ordinary\";",
+      "replace": "e.path = \"ordinary\";",
+      "why": "beec640b build b (records effects): card path never recorded",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: an honest tap per Cloudflare-master job and path is kept whole; other jobs get no entry"
+      },
+      "expect": "the effects entries are not exactly the honest master taps"
+    },
+    {
+      "id": "cfmatch-cf-none",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "{ made: [...lists.made], deleted: [...lists.deleted] } : \"none\";",
+      "replace": "{ made: [...lists.made], deleted: [...lists.deleted] } : \"unknown\";",
+      "why": "beec640b build b (records effects): legacy cf recorded as unknown",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: legacy results without cf are kept as none; cf unknown is kept as unknown"
+      },
+      "expect": "legacy or unknown cf was not kept as none or unknown"
+    },
+    {
+      "id": "cfmatch-later-taint",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (h.live) fx.grants[h.live].tainted ??= kind(f.id);",
+      "replace": "if (h.live) void kind(f.id);",
+      "why": "beec640b build b (records effects): later findings never taint",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a later daily-count finding on a kept record number taints its grant"
+      },
+      "expect": "a later sweep finding on the result's number did not taint the grant"
+    },
+    {
+      "id": "cfmatch-later-taint-by-number",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "n !== undefined && Object.hasOwn(fx.index, n) ? fx.index[n] : undefined",
+      "replace": "undefined",
+      "why": "beec640b build b (records effects): a finding naming only a record number never taints",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "effects: a later daily-count finding on a kept record number taints its grant"
+      },
+      "expect": "a later sweep finding on the result's number did not taint the grant"
+    },
+    {
+      "id": "cfmatch-retire-72h",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "> EFFECTS_KEEP_MS && done.has(g)",
+      "replace": ">= 0 && done.has(g)",
+      "why": "beec640b build b (records effects): retirement ignores the 72 h hold",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retention: an entry is retired only after res.at + 72 h AND cfaudit's m.done names it; its index lasts 30 days more"
+      },
+      "expect": "an entry was retired before 72 h"
+    },
+    {
+      "id": "cfmatch-retire-done",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "> EFFECTS_KEEP_MS && done.has(g)",
+      "replace": "> EFFECTS_KEEP_MS",
+      "why": "beec640b build b (records effects): retirement ignores cfaudit's m.done",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retention: an entry is retired only after res.at + 72 h AND cfaudit's m.done names it; its index lasts 30 days more"
+      },
+      "expect": "an entry was retired without cfaudit's acknowledgement"
+    },
+    {
+      "id": "cfmatch-index-keep",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "<= INDEX_KEEP_MS)) delete fx.index[n];",
+      "replace": "<= 0)) delete fx.index[n];",
+      "why": "beec640b build b (records effects): the index is dropped at retirement",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retention: an entry is retired only after res.at + 72 h AND cfaudit's m.done names it; its index lasts 30 days more"
+      },
+      "expect": "the index was dropped before 30 days"
+    },
+    {
+      "id": "cfmatch-covered-unverified",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (verdict === \"ran\" && ended && tailClear && checked < PAGE) fx.covered_to",
+      "replace": "if (ended && tailClear && checked < PAGE) fx.covered_to",
+      "why": "beec640b build b (records effects): an unverified run moves covered_to",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "an unverified daily-count run moved covered_to"
+    },
+    {
+      "id": "cfmatch-covered-tail",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (verdict === \"ran\" && ended && tailClear && checked < PAGE) fx.covered_to",
+      "replace": "if (verdict === \"ran\" && ended && checked < PAGE) fx.covered_to",
+      "why": "beec640b build b (records effects): a run that did not prove the tail moves covered_to",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "a run that saw a higher number moved covered_to"
+    },
+    {
+      "id": "cfmatch-covered-monotonic",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.covered_to = Math.max(fx.covered_to, now.getTime() - SKEW_MS - WRITE_MARGIN_MS);",
+      "replace": "fx.covered_to = now.getTime() - SKEW_MS - WRITE_MARGIN_MS;",
+      "why": "beec640b build b (records effects): covered_to moves backwards",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "covered_to moved backwards"
+    },
+    {
+      "id": "cfmatch-covered-margin",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "now.getTime() - SKEW_MS - WRITE_MARGIN_MS);",
+      "replace": "now.getTime() - SKEW_MS);",
+      "why": "beec640b build b (records effects): covered_to drops the write margin",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "covered_to: a quiet run moves it to run start - skew - margin; an unverified or backlog run does not; it never moves back"
+      },
+      "expect": "a run that read to the end did not set covered_to"
+    },
+    {
+      "id": "cfmatch-gen",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "effects: { ...fx, gen: fx.gen + 1 }",
+      "replace": "effects: { ...fx, gen: fx.gen }",
+      "why": "beec640b build b (records effects): gen does not count saves",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "save: gen counts saves; a throw or a null at the save leaves effects and bookmark unchanged, and the next run rebuilds the same"
+      },
+      "expect": "gen is not 1 after the first save"
+    },
+    {
+      "id": "cfmatch-save-etag",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "const onlyIf = etag ? { etagMatches: etag } : new Headers({ \"If-None-Match\": \"*\" });",
+      "replace": "const onlyIf = etag ? undefined : new Headers({ \"If-None-Match\": \"*\" });",
+      "why": "beec640b build b (records effects): the save is not conditional on the etag read",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "save: two runs racing -- the loser writes nothing and the winner's state stands"
+      },
+      "expect": "the losing run reported ran"
+    },
+    {
+      "id": "cfmatch-save-create",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "const onlyIf = etag ? { etagMatches: etag } : new Headers({ \"If-None-Match\": \"*\" });",
+      "replace": "const onlyIf = etag ? { etagMatches: etag } : undefined;",
+      "why": "beec640b build b (records effects): the first save is not create-if-absent",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "save: the first save creates state only if none exists"
+      },
+      "expect": "a run that saw no state overwrote existing state"
+    },
+    {
+      "id": "cfmatch-defer-while-replaying",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.replay_from === undefined && !project(",
+      "replace": "!project(",
+      "why": "beec640b build b (records effects): live projection runs ahead of a pending replay",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: at MAX_EFFECTS live entries replay_from marks the first record not kept, the bookmark advances, and nothing is lost when room returns"
+      },
+      "expect": "replay_from does not name the first record not kept"
+    },
+    {
+      "id": "cfmatch-replay-stops",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "own && kind(own))) break;",
+      "replace": "own && kind(own))) { /* no stop */ }",
+      "why": "beec640b build b (records effects): replay skips records with no room",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: at MAX_EFFECTS live entries replay_from marks the first record not kept, the bookmark advances, and nothing is lost when room returns"
+      },
+      "expect": "replay_from does not name the first record not kept"
+    },
+    {
+      "id": "cfmatch-replay-grant-taint",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.grants[m.grant].tainted ??= kind(onGrant);",
+      "replace": "void kind(onGrant);",
+      "why": "beec640b build b (records effects): replay ignores grant-level incidents",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: a replayed record with a standing finding is tainted, as if read live"
+      },
+      "expect": "a replayed grant with a standing finding on the grant was not tainted"
+    },
+    {
+      "id": "cfmatch-replay-own",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "const own = r.finding ? \"bad\" : droppedFull ? \"incidents overflow\" : ids.find(at)",
+      "replace": "const own = r.finding ? \"bad\" : undefined",
+      "why": "beec640b build b (records effects): replay ignores record-level incidents",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "cap: a replayed record with a standing finding is tainted, as if read live"
+      },
+      "expect": "a replayed record with a standing finding on its number was not tainted"
+    },
+    {
+      "id": "cfmatch-hit-live-only",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (byN !== undefined && Object.hasOwn(fx.grants, byN)) return { live: byN };",
+      "replace": "if (byN !== undefined) return { live: byN };",
+      "why": "beec640b build b (records effects guard): a retired grant found through the index is treated as live",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retired: a finding on a retired grant's record raises one incident and is kept for re-judging; the run does not throw"
+      },
+      "expect": "a finding on a retired record broke the run"
+    },
+    {
+      "id": "cfmatch-retired-incident",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": ", findings.push({ id: `retired-bad:",
+      "replace": ", void ({ id: `retired-bad:",
+      "why": "beec640b build b (records effects guard): a finding on a retired record raises no incident",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retired: a finding on a retired grant's record raises one incident and is kept for re-judging; the run does not throw"
+      },
+      "expect": "no retired-record incident was raised"
+    },
+    {
+      "id": "cfmatch-retired-revoked",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "(fx.revoked[h.retired.n] = h.retired.grant), ",
+      "replace": "",
+      "why": "beec640b build b (records effects guard): a finding on a retired record is not kept for re-judging",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "retired: a finding on a retired grant's record raises one incident and is kept for re-judging; the run does not throw"
+      },
+      "expect": "the retired record was not kept for re-judging"
+    },
+    {
+      "id": "cfmatch-guard-main",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fx.replay_from ??= next; // projected again later, never skipped",
+      "replace": "throw new Error(\"effects\");",
+      "why": "beec640b build b (records effects guard): a throw projecting a record escapes into the read",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "the unverified reason does not name effects (the main read)"
+    },
+    {
+      "id": "cfmatch-guard-after",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fxErr ??= \"the effects list could not be updated after the read\";",
+      "replace": "throw new Error(\"effects\");",
+      "why": "beec640b build b (records effects guard): a throw after the read escapes the run",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "effects threw out of the run (after the read)"
+    },
+    {
+      "id": "cfmatch-guard-replay",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "fxErr ??= \"the effects list could not replay held-back records\";",
+      "replace": "throw new Error(\"effects\");",
+      "why": "beec640b build b (records effects guard): a throw in the replay escapes the run",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "effects threw out of the run (the main read)"
+    },
+    {
+      "id": "cfmatch-guard-verdict",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "if (fxErr) (verdict = \"unverified\")",
+      "replace": "if (false) (verdict = \"unverified\")",
+      "why": "beec640b build b (records effects guard): an effects failure leaves the run reported as ran",
+      "test": {
+        "file": "test/effects.test.ts",
+        "name": "guard: a throw inside the effects bookkeeping marks the run unverified, and existing findings are still alerted and saved"
+      },
+      "expect": "did not mark the run unverified"
+    },
+    {
+      "id": "cfmatch-m-failed",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!ev.ok) return { why",
+      "replace": "if (false) return { why",
+      "why": "beec640b build b (row 23: a failed event explained)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 23: failed events carrying named ids explain nothing and satisfy nothing"
+      },
+      "expect": "a failed event was explained"
+    },
+    {
+      "id": "cfmatch-m-ok-field",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "ok: e.action.result === \"success\"",
+      "replace": "ok: true",
+      "why": "beec640b build b (row 23: failed events taken as successful)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 23: failed events carrying named ids explain nothing and satisfy nothing"
+      },
+      "expect": "a failed event was explained"
+    },
+    {
+      "id": "cfmatch-m-two-taps",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (named.length > 1) return",
+      "replace": "if (named.length > 99) return",
+      "why": "beec640b build b (row 3: a key two taps name matches the first)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 3: one key named twice for the same action alerts; made by one tap and deleted by another is clean"
+      },
+      "expect": "a doubly named key matched"
+    },
+    {
+      "id": "cfmatch-m-tainted-names",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "!e.tainted && list(e).includes(ev.k)",
+      "replace": "list(e).includes(ev.k)",
+      "why": "beec640b build b (row 7: a tainted tap explains its keys)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 7: a tap with cf unknown, legacy none, or tainted explains nothing, with the right words"
+      },
+      "expect": "an unknown, none or tainted tap explained a key"
+    },
+    {
+      "id": "cfmatch-m-vague-words",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (vague.length !== 1) return { why: \"no approved tap names it\" };",
+      "replace": "if (true) return { why: \"no approved tap names it\" };",
+      "why": "beec640b build b (row 7: the unknown-tap words are lost)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 7: a tap with cf unknown, legacy none, or tainted explains nothing, with the right words"
+      },
+      "expect": "the unknown words or grant are missing"
+    },
+    {
+      "id": "cfmatch-m-window-low",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "ev.t >= e.appr.at && ev.t <= e.res.at",
+      "replace": "ev.t <= e.res.at",
+      "why": "beec640b build b (row 4: an event before approval matches)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 4: an event before the approval or after the result alerts"
+      },
+      "expect": "an event outside its tap's window matched"
+    },
+    {
+      "id": "cfmatch-m-window-high",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "ev.t >= e.appr.at && ev.t <= e.res.at;",
+      "replace": "ev.t >= e.appr.at;",
+      "why": "beec640b build b (row 4: an event after the result matches)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 4: an event before the approval or after the result alerts"
+      },
+      "expect": "an event outside its tap's window matched"
+    },
+    {
+      "id": "cfmatch-m-window-check",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!inWin(e)) return",
+      "replace": "if (false) return",
+      "why": "beec640b build b (row 4: the window is not applied to a named tap)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 4: an event before the approval or after the result alerts"
+      },
+      "expect": "an event outside its tap's window matched"
+    },
+    {
+      "id": "cfmatch-m-twin",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (expl.some((x) => x.a === ev.a && x.k === ev.k && x.id !== ev.id))",
+      "replace": "if (false)",
+      "why": "beec640b build b (row 3/F17: a second event for one key change matches)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 3: a second event for the same key and action is an incident, never a second match"
+      },
+      "expect": "a second event id for one key action was matched"
+    },
+    {
+      "id": "cfmatch-m-count-create",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(ev.a === \"create\" ? al[0] : al[1])",
+      "replace": "(ev.a === \"create\" ? 99 : al[1])",
+      "why": "beec640b build b (row 5/F15: creates over the job count match)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 5: creates over the job's count alert (two for audit.read, any for accept)"
+      },
+      "expect": "a create over the job's count matched"
+    },
+    {
+      "id": "cfmatch-m-count-delete",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(ev.a === \"create\" ? al[0] : al[1])",
+      "replace": "(ev.a === \"create\" ? al[0] : 99)",
+      "why": "beec640b build b (row 5/F15: deletes over the job count match)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 5: deletes over the job's count alert"
+      },
+      "expect": "a delete over the job's count matched"
+    },
+    {
+      "id": "cfmatch-m-shape-name",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(ev.s !== al[2] || (",
+      "replace": "(false || (",
+      "why": "beec640b build b (row 6: a wrongly named create matches)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 6: a create whose name, expiry or kind does not fit its job alerts"
+      },
+      "expect": "a misshapen create matched"
+    },
+    {
+      "id": "cfmatch-m-shape-expiry",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "!(ev.x! >= 0 && ev.x! <= ev.t + PROBE_MS)",
+      "replace": "false",
+      "why": "beec640b build b (row 6: a helper with a long or no expiry matches)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 6: a create whose name, expiry or kind does not fit its job alerts"
+      },
+      "expect": "a misshapen create matched"
+    },
+    {
+      "id": "cfmatch-m-shape-hc-expiry",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "al[2] === \"h\" ? ev.x !== -1 :",
+      "replace": "al[2] === \"h\" ? false :",
+      "why": "beec640b build b (row 6: a headcount key with an expiry matches)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 6: a create whose name, expiry or kind does not fit its job alerts"
+      },
+      "expect": "a misshapen create matched"
+    },
+    {
+      "id": "cfmatch-m-wait",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "fx.covered_to >= ev.t + RESULT_WAIT_MS",
+      "replace": "true",
+      "why": "beec640b build b (row 2/F2: an event alerts before its result could be recorded)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 2: a create and a delete no tap names alert once coverage passes; held before"
+      },
+      "expect": "an event alerted before its result could have been recorded"
+    },
+    {
+      "id": "cfmatch-m-stale",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (T - old > STALE_MS) add(",
+      "replace": "if (false) add(",
+      "why": "beec640b build b (row 11/F4: six hours pending raises nothing)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 11: records 1 h behind holds; 6 h raises one incomplete incident; recovery judges once"
+      },
+      "expect": "six hours pending did not raise exactly one incomplete incident"
+    },
+    {
+      "id": "cfmatch-m-full",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "t >= m.from && m.pend.length >= MAX_PENDING",
+      "replace": "t >= m.from && false",
+      "why": "beec640b build b (row 11: pending grows past 500)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 11: the 501st pending event holds the bookmark; nothing is dropped"
+      },
+      "expect": "pending grew past its bound"
+    },
+    {
+      "id": "cfmatch-m-held",
+      "row": "beec640b-b",
+      "file": "src/cfaudit.ts",
+      "find": "if (mx.isMaster(j) && mx.full(t)) { held = true; break; }",
+      "replace": "",
+      "why": "beec640b build b (row 11: the 501st event is not held)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 11: the 501st pending event holds the bookmark; nothing is dropped"
+      },
+      "expect": "pending grew past its bound"
+    },
+    {
+      "id": "cfmatch-m-revoke-taint",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (e?.tainted || (",
+      "replace": "if (false || (",
+      "why": "beec640b build b (row 14/F9: a tainted tap's explanation stands)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 14: an explained event whose tap is later tainted is re-judged once"
+      },
+      "expect": "a revoked explanation was not re-judged exactly once"
+    },
+    {
+      "id": "cfmatch-m-retire-move",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "m.expl = m.expl.filter((x) => !out.has(x.g!))",
+      "replace": "void 0",
+      "why": "beec640b build b (row 22: retired associations stay in working state)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "retired associations stayed in working state"
+    },
+    {
+      "id": "cfmatch-m-rejudge-retired",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "for (const ev of hit.evs) unexplain(ev);",
+      "replace": "",
+      "why": "beec640b build b (row 22/13.3: a retired record's finding re-judges nothing)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "a retired tap's events were not re-judged once at 32 days"
+    },
+    {
+      "id": "cfmatch-m-rejudge-once",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "m.rj.push(n);",
+      "replace": "",
+      "why": "beec640b build b (row 22: a re-judged record is not remembered)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "the re-judged record was not remembered"
+    },
+    {
+      "id": "cfmatch-m-bare-revoked",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "else if (n !== undefined) fx.revoked[n] ??= \"\"; // any age (13.3)",
+      "replace": "",
+      "why": "beec640b build b (row 22/13.3: records stops reporting a bad record past its 30-day index)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "a retired tap's events were not re-judged once at 32 days"
+    },
+    {
+      "id": "cfmatch-m-rebuild-lost",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "(seq > 0 && !(pe.grants && typeof pe.grants === \"object\"))",
+      "replace": "false",
+      "why": "beec640b build b (12.5: lost effects restart fresh instead of being rebuilt)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "12.5: effects and matching state both lost: records rebuilds from the last epoch boundary"
+      },
+      "expect": "lost effects with no matching state were not rebuilt from the last epoch"
+    },
+    {
+      "id": "cfmatch-m-rebuild-gen",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "(Number.isInteger(ca?.gen) && fx.gen < ca.gen)",
+      "replace": "false",
+      "why": "beec640b build b (12.5: an older records state restarts silently)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "12.5: a records state older than cfaudit last saw (gen behind) is a recovery, not a silent restart"
+      },
+      "expect": "an older records state was not treated as a recovery"
+    },
+    {
+      "id": "cfmatch-m-rebuild-since",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "since: at - GRANT_TTL_MS - 3_600_000",
+      "replace": "since: now.getTime()",
+      "why": "beec640b build b (row 25/12.5: rebuilt effects do not cover the off period)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 25 / 12.5: end to end, effects lost in a revert are rebuilt from the records: honest taps made while off match, an unnamed write still alerts"
+      },
+      "expect": "the rebuilt effects do not cover the off period"
+    },
+    {
+      "id": "cfmatch-m-rebuild-start",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "  return lo;\n}",
+      "replace": "  return 1;\n}",
+      "why": "beec640b build b (12.5: the rebuild starts at record one, not at the floor)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "12.5: the rebuild starts at the first record at or after the floor, not at record one"
+      },
+      "expect": "records before the floor were rebuilt"
+    },
+    {
+      "id": "cfmatch-m-late-followup",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!x.why) add(`explained-after:",
+      "replace": "if (false) add(`explained-after:",
+      "why": "beec640b build b (row 15/F14: no follow-up after a late result)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 15: a result recorded after the wait alerts, then sends one explained-after-the-alert follow-up"
+      },
+      "expect": "the late explanation did not send exactly one follow-up"
+    },
+    {
+      "id": "cfmatch-m-backwards",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "fx.covered_to < m.cov",
+      "replace": "false",
+      "why": "beec640b build b (row 13: coverage going backwards is used)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 13: effects missing, malformed or with coverage going backwards explain nothing and raise one incident"
+      },
+      "expect": "an event was explained from missing or malformed effects"
+    },
+    {
+      "id": "cfmatch-m-validate",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "Object.values(x.grants).every(entry)",
+      "replace": "true",
+      "why": "beec640b build b (row 13/F6: malformed effects are used)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 13: effects missing, malformed or with coverage going backwards explain nothing and raise one incident"
+      },
+      "expect": "missing or malformed effects did not raise one incident"
+    },
+    {
+      "id": "cfmatch-m-hold-replay",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const hold = !fx || fx.replay_from !== undefined;",
+      "replace": "const hold = !fx;",
+      "why": "beec640b build b (row 13/12.2: held-back tap records are matched against)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 13: tap records held back at capacity (replay_from) explain nothing and report matching incomplete"
+      },
+      "expect": "an event was explained while the tap records were held back"
+    },
+    {
+      "id": "cfmatch-m-activate",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "T - SETTLE_MS >= cand",
+      "replace": "true",
+      "why": "beec640b build b (row 16/F10: matching activates before B_FROM)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 16: before B_FROM master writes are counted apart; the first active run pushes matching on, once"
+      },
+      "expect": "matching activated before B_FROM"
+    },
+    {
+      "id": "cfmatch-m-pre-count",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (m.from === undefined || t < m.from) return",
+      "replace": "if (m.from === undefined) return",
+      "why": "beec640b build b (row 16: writes before B_FROM are judged)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 16: before B_FROM master writes are counted apart; the first active run pushes matching on, once"
+      },
+      "expect": "a pre-activation write read after activation was judged"
+    },
+    {
+      "id": "cfmatch-m-on",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (on) add(`on:",
+      "replace": "if (false) add(`on:",
+      "why": "beec640b build b (row 16/L1: no matching-on line)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 16: before B_FROM master writes are counted apart; the first active run pushes matching on, once"
+      },
+      "expect": "the first active run did not raise one matching-on line"
+    },
+    {
+      "id": "cfmatch-m-week",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "week[k] = (week[k] ?? 0) + n;",
+      "replace": "void 0;",
+      "why": "beec640b build b (row 27: the weekly line lacks matched taps)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 27: production path: an honest tap after activation matches, and the weekly line names its tap and count"
+      },
+      "expect": "the weekly counts do not name the tap and its matched count"
+    },
+    {
+      "id": "cfmatch-m-reverse",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (miss) add(`reverse:",
+      "replace": "if (false) add(`reverse:",
+      "why": "beec640b build b (row 8/F3: a named id with no event is not raised)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 8: a named id with no event, or with its event outside the window, is one reverse incident; taps before B_FROM are not checked"
+      },
+      "expect": "a reverse miss was not one incident per tap"
+    },
+    {
+      "id": "cfmatch-m-reverse-from",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "e.appr.at < m.from! || m.rev",
+      "replace": "m.rev",
+      "why": "beec640b build b (row 8: taps before B_FROM are reverse-checked)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 8: a named id with no event, or with its event outside the window, is one reverse incident; taps before B_FROM are not checked"
+      },
+      "expect": "a reverse miss was not one incident per tap"
+    },
+    {
+      "id": "cfmatch-m-outlived-24h",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (through <= ev.t + HELPER_MS) continue;",
+      "replace": "",
+      "why": "beec640b build b (row 9: lifetimes decided before 24 h)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 9: a helper outliving 24 h is an incident; the installed headcount key with an in-use read is not; a leftover candidate is"
+      },
+      "expect": "a helper was flagged before 24 h"
+    },
+    {
+      "id": "cfmatch-m-done-open-helper",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "&& !m.expl.some((x) => x.g === g && x.a === \"create\" && !x.o)",
+      "replace": "",
+      "why": "beec640b build b (row 21/12.2: a tap with an open helper check is acknowledged)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 21: a tap with unfinished matching is not acknowledged done; once finished it is"
+      },
+      "expect": "a tap with a missing delete and its helper check open was acknowledged"
+    },
+    {
+      "id": "cfmatch-m-done-pending",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "&& !m.pend.some((x) => x.t >= start && x.t <= end)",
+      "replace": "",
+      "why": "beec640b build b (row 21/12.2: a tap with a pending event is acknowledged)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 21: a tap with unfinished matching is not acknowledged done; once finished it is"
+      },
+      "expect": "a tap with a pending event in its window was acknowledged done"
+    },
+    {
+      "id": "cfmatch-m-dedupe",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (known(id)) return;",
+      "replace": "",
+      "why": "beec640b build b (row 25: a replayed event is taken twice)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#15 dedupe: an event read by both the replay and the main read is judged once"
+      },
+      "expect": "an event read twice was queued twice"
+    },
+    {
+      "id": "cfmatch-m-gap",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "add(`gap:${rp.s}`",
+      "replace": "((..._: string[]) => {})(`gap:${rp.s}`",
+      "why": "beec640b build b (row 25/13.2: no gap incident)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 25: revert with a pending event, build a advancing the bookmark, then re-enable: all judged, gap incident in addition"
+      },
+      "expect": "no gap incident was raised in addition"
+    },
+    {
+      "id": "cfmatch-m-sync",
+      "row": "beec640b-b",
+      "file": "src/cfaudit.ts",
+      "find": "mx.sync(); // the matching checkpoint",
+      "replace": "// the matching checkpoint",
+      "why": "beec640b build b (13.1: the matching checkpoint never moves, so every run replays)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 1: an honest trace per job is matched with no unmatched alert and a clean reverse check"
+      },
+      "expect": "the matching checkpoint did not move with the bookmark"
+    },
+    {
+      "id": "cfmatch-m-reset",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "ev.t < fx.since + WARM_MS ? {",
+      "replace": "false ? {",
+      "why": "beec640b build b (row 25/12.5: a write the restarted records cannot cover is matched or held)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 25: tap records that restart (a new since) are a recovery: a write before the new warm-up alerts as unmatchable"
+      },
+      "expect": "a write the restarted records cannot cover was matched or held"
+    },
+    {
+      "id": "cfmatch-m-replay-advance",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (t > rp.from) (rp.from = t), (rp.ids = [id]);",
+      "replace": "",
+      "why": "beec640b build b (security a: the replay position moves only on master writes, so it never progresses)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "security a: a replay range of more pages than one run reads, with no master write on them, still progresses and finishes"
+      },
+      "expect": "a replay with no master writes on its pages never finished"
+    },
+    {
+      "id": "cfmatch-m-replay-since",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "since=${iso(since)}",
+      "replace": "since=${iso(rp.from)}",
+      "why": "beec640b build b (security b: a cursor paired with a moved since skips events)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "security b: a cursor is never paired with a changed since: no event in the replay range is skipped"
+      },
+      "expect": "a master write was skipped by a cursor paired with a moved since"
+    },
+    {
+      "id": "cfmatch-m-replay-red",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "return ++rp.runs >= REPLAY_RUNS ?",
+      "replace": "return ++rp.runs >= Infinity ?",
+      "why": "beec640b build b (security c: a stuck replay never turns the light red)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "security c: a replay still unfinished after REPLAY_RUNS runs turns the light red"
+      },
+      "expect": "a replay unfinished after its runs left the light green"
+    },
+    {
+      "id": "cfmatch-m-late-keep",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "|| fx.covered_to > ev.t + GRANT_TTL_MS + LATE_KEEP_MS",
+      "replace": "|| T - ev.t > LATE_KEEP_MS",
+      "why": "beec640b build b (#11: late events dropped by elapsed time, not records' progress)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 2: a create and a delete no tap names alert once coverage passes; held before"
+      },
+      "expect": "alerted events were dropped by elapsed time"
+    },
+    {
+      "id": "cfmatch-m-late-drop",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "|| fx.covered_to > ev.t + GRANT_TTL_MS + LATE_KEEP_MS",
+      "replace": "",
+      "why": "beec640b build b (#11: late events kept forever)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 2: a create and a delete no tap names alert once coverage passes; held before"
+      },
+      "expect": "alerted events were kept after records' coverage passed"
+    },
+    {
+      "id": "cfmatch-m-hc-unconfirmed",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (hc && !read(ev) && through <= ev.t + HC_IDLE_MS) continue;",
+      "replace": "",
+      "why": "beec640b build b (row 9/12.3: an unconfirmed headcount key is raised at 24 h)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 9: a helper outliving 24 h is an incident; the installed headcount key with an in-use read is not; a leftover candidate is"
+      },
+      "expect": "a 24 h helper was not flagged, or a headcount key was decided early"
+    },
+    {
+      "id": "cfmatch-m-hc-after-result",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(m.hc[ev.k] ?? -Infinity) > ev.r!",
+      "replace": "(m.hc[ev.k] ?? -Infinity) > -Infinity",
+      "why": "beec640b build b (row 24/F20: the setup probe makes a candidate current)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#8: a failed candidate's setup probe never displaces the installed key as newest"
+      },
+      "expect": "a failed candidate's setup probe displaced the installed key"
+    },
+    {
+      "id": "cfmatch-m-recover",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "=> (m.t < bm.t || (m.t === bm.t && bm.ids.some((id) => !m.ids.includes(id)))) && !m.rp;",
+      "replace": "=> false;",
+      "why": "beec640b build b (row 25/13.2: writes ingested while b was off are never judged)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 25: revert with a pending event, build a advancing the bookmark, then re-enable: all judged, gap incident in addition"
+      },
+      "expect": "an event pending or ingested while off was not judged"
+    },
+    {
+      "id": "cfmatch-m-recover-tie",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " || (m.t === bm.t && bm.ids.some((id) => !m.ids.includes(id)))",
+      "replace": "",
+      "why": "beec640b build b (#3: a bookmark extended at the same instant is not a recovery)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#3: build a extending the bookmark at the same instant is a recovery; the event is judged"
+      },
+      "expect": "a write build a read at the checkpoint's instant was never judged"
+    },
+    {
+      "id": "cfmatch-m-sync-ids",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(m.ids = [...s.bm.ids])",
+      "replace": "(m.ids = [])",
+      "why": "beec640b build b (#3: the checkpoint's ids do not move with the bookmark)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 1: an honest trace per job is matched with no unmatched alert and a clean reverse check"
+      },
+      "expect": "the matching checkpoint's ids did not move with the bookmark"
+    },
+    {
+      "id": "cfmatch-m-replay-keep",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (pg.bad) return `replay: ${pg.bad}`;",
+      "replace": "if (pg.bad) break;",
+      "why": "beec640b build b (#10: an unclean replay answer abandons the range)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 28 (#10): a replay answer that is not a clean page keeps the range; matching stays incomplete and red, never lost by inference"
+      },
+      "expect": "an unclean replay answer deleted the replay range"
+    },
+    {
+      "id": "cfmatch-m-status-ux",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "|| m.rp || m.ux ||",
+      "replace": "|| m.rp ||",
+      "why": "beec640b build b (#7: an unresolved revoked record reports matching complete)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#7: a lookup of a revoked record has no age cap, and an unreadable index keeps matching incomplete"
+      },
+      "expect": "an unreadable index entry left matching reported complete"
+    },
+    {
+      "id": "cfmatch-m-status-stale",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "|| T - m.pend.reduce((a, x) => Math.min(a, x.t), Infinity) > STALE_MS ?",
+      "replace": " ?",
+      "why": "beec640b build b (#14: stale pending work reports matching complete)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#14: matching is reported active again once the pending work it waited on is judged"
+      },
+      "expect": "stale pending work did not report matching incomplete"
+    },
+    {
+      "id": "cfmatch-m-ack-index",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "m.done = (await index(fresh)) ? (",
+      "replace": "m.done = (true) ? (",
+      "why": "beec640b build b (row 22/13.3: a tap is acknowledged done before its index entry landed)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: a tap is acknowledged done only once its index entry landed"
+      },
+      "expect": "a tap was acknowledged done while its index entry could not be saved"
+    },
+    {
+      "id": "cfmatch-m-index-n",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "for (const n of ns) { const g = fx!.index[n]",
+      "replace": "for (const n of [] as string[]) { const g = fx!.index[n]",
+      "why": "beec640b build b (row 22/13.3: the index cannot be found by record number)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "a retired tap's events were not re-judged once at 32 days"
+    },
+    {
+      "id": "cfmatch-m-revoked-standing",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "&& !standing.has(n) && (Array.isArray",
+      "replace": "&& (Array.isArray",
+      "why": "beec640b build b (S3: a confirmed number still raised is dropped and re-judged again)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 22: end to end, a records finding 32 days after retirement on a retired tap's record re-judges its matched events from the monthly index"
+      },
+      "expect": "a confirmed number that is still raised was dropped"
+    },
+    {
+      "id": "cfmatch-m-revoked-confirmed",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "(Array.isArray(ca?.rj) && ca.rj.includes(n))",
+      "replace": "true",
+      "why": "beec640b build b (S3: a bare number is dropped before cfaudit confirms it)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S3: records keeps a bare revoked number until cfaudit confirms it handled it"
+      },
+      "expect": "a bare number was dropped before cfaudit confirmed it"
+    },
+    {
+      "id": "cfmatch-m-perm",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (ev.a === \"create\" && !(ev.pg?.length && ev.pg.every((p) => al[3].includes(p)))) return",
+      "replace": "if (false) return",
+      "why": "beec640b build b (#1: permission groups are not checked)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#1: a create whose permission groups do not fit the job, or cannot be read, is not explained"
+      },
+      "expect": "a key with the wrong or unreadable permissions matched"
+    },
+    {
+      "id": "cfmatch-m-perm-empty",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "!(ev.pg?.length && ev.pg.every(",
+      "replace": "!(ev.pg?.every(",
+      "why": "beec640b build b (#1: a key with no permission groups read passes)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#1: a create whose permission groups do not fit the job, or cannot be read, is not explained"
+      },
+      "expect": "a key with the wrong or unreadable permissions matched"
+    },
+    {
+      "id": "cfmatch-m-accept-deletes",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "\"cf.token.accept\": [0, 1, \"p\", []]",
+      "replace": "\"cf.token.accept\": [0, 2, \"p\", []]",
+      "why": "beec640b build b (#2: accept allows a second delete)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "row 5: deletes over the job's count alert"
+      },
+      "expect": "a delete over the job's count matched"
+    },
+    {
+      "id": "cfmatch-m-valid-from",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(m.ep === 0 || fin(m.from))",
+      "replace": "true",
+      "why": "beec640b build b (#4: an activated state without its boundary is accepted)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#4: an activated matching state without its boundary is a recovery, not pre-activation forever"
+      },
+      "expect": "a write after a corrupt matching state was counted as before activation"
+    },
+    {
+      "id": "cfmatch-m-epochs-unreadable",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (ex !== undefined && !(Array.isArray",
+      "replace": "if (false && !(Array.isArray",
+      "why": "beec640b build b (#4: an unreadable activation record is read as empty)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#4: an unreadable activation record explains nothing and is raised"
+      },
+      "expect": "an event was matched while the activation record was unreadable"
+    },
+    {
+      "id": "cfmatch-m-first-epoch",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "t: epochs[0]?.boundary ?? s.bm.t",
+      "replace": "t: epochs.at(-1)?.boundary ?? s.bm.t",
+      "why": "beec640b build b (#4: lost state replays only from the latest epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#4: lost matching state replays from the first epoch, where unresolved work may start"
+      },
+      "expect": "an event before the latest epoch was not judged"
+    },
+    {
+      "id": "cfmatch-m-floor-late",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "ca?.pend, ca?.late, ca?.expl",
+      "replace": "ca?.pend, ca?.expl",
+      "why": "beec640b build b (#5: the rebuild floor ignores late events)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#5: the rebuild floor covers late and not-yet-indexed matched events, not only the checkpoint"
+      },
+      "expect": "the rebuild floor ignored a late event's needs"
+    },
+    {
+      "id": "cfmatch-m-replay-through",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const through = m.rp ? Math.min(bmThrough, m.rp.from) : bmThrough;",
+      "replace": "const through = bmThrough;",
+      "why": "beec640b build b (#6: absence judged where the replay has not read)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#6: an unfinished replay never judges absence or acknowledges a tap it has not read"
+      },
+      "expect": "the reverse check judged events the replay had not read yet"
+    },
+    {
+      "id": "cfmatch-m-index-unreadable",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!isO(f)) return undefined;",
+      "replace": "if (!isO(f)) continue;",
+      "why": "beec640b build b (#7: an unreadable index month counts as proven absence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#7: a lookup of a revoked record has no age cap, and an unreadable index keeps matching incomplete"
+      },
+      "expect": "an unreadable index entry was marked handled"
+    },
+    {
+      "id": "cfmatch-m-index-verdict",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "Object.entries(fx!.index).filter(([, g]) => gs.includes(g)).map(([n]) => n)",
+      "replace": "gs.flatMap((g) => [fx!.grants[g]?.req?.n, fx!.grants[g]?.appr?.n, fx!.grants[g]?.res?.n]).filter((n) => n !== undefined).map(String)",
+      "why": "beec640b build b (#7: verdict record numbers are not indexed)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#7/S1: acknowledging a tap writes every record number of its chain, verdicts and taps with no matched event included"
+      },
+      "expect": "of an acknowledged tap is not in the index"
+    },
+    {
+      "id": "cfmatch-m-index-always",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "!m.ix.includes(g) || m.expl.some",
+      "replace": "m.expl.some",
+      "why": "beec640b build b (S1: taps with no matched event are never indexed)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#7/S1: acknowledging a tap writes every record number of its chain, verdicts and taps with no matched event included"
+      },
+      "expect": "of an acknowledged tap is not in the index"
+    },
+    {
+      "id": "cfmatch-m-hc-newest-qualified",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "x.j === HC_JOB && read(x))",
+      "replace": "x.j === HC_JOB)",
+      "why": "beec640b build b (#8: an unqualified probe read wins newest)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#8: a failed candidate's setup probe never displaces the installed key as newest"
+      },
+      "expect": "a failed candidate's setup probe displaced the installed key"
+    },
+    {
+      "id": "cfmatch-m-hc-recheck",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!hc) ev.o = 1;",
+      "replace": "ev.o = 1;",
+      "why": "beec640b build b (#8: a headcount decision becomes permanent)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#8: an unconfirmed candidate past 48 h is raised but stays pending (still watched)"
+      },
+      "expect": "an unconfirmed headcount candidate was marked decided"
+    },
+    {
+      "id": "cfmatch-m-hc-idle",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " && through - m.hc[ev.k] < HC_IDLE_MS) continue;",
+      "replace": ") continue;",
+      "why": "beec640b build b (#8: a key unread for 48 h stays exempt)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#8: the headcount key is re-checked every run: 48 h without a read raises it"
+      },
+      "expect": "a headcount key not read for 48 h stayed exempt"
+    },
+    {
+      "id": "cfmatch-m-replay-pending-cap",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (m.pend.length >= MAX_PENDING) return",
+      "replace": "if (false) return",
+      "why": "beec640b build b (#9: replay bypasses the pending bound)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#9: a replay never puts more than MAX_PENDING master writes in the pending list; it holds its place"
+      },
+      "expect": "the replay grew pending"
+    },
+    {
+      "id": "cfmatch-m-echo-hold",
+      "row": "beec640b-b",
+      "file": "src/cfaudit.ts",
+      "find": " || (r.k === \"echo\" && tap(r) === \"\")",
+      "replace": "",
+      "why": "beec640b build b (#12: an echo is told before its key event is judged)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#12: an echo waits while its key event is matched, then says approved by your tap"
+      },
+      "expect": "the echo was told before its key event was judged"
+    },
+    {
+      "id": "cfmatch-m-echo-words",
+      "row": "beec640b-b",
+      "file": "src/cfaudit.ts",
+      "find": "${tap(r) ? `, approved by your tap",
+      "replace": "${false ? `, approved by your tap",
+      "why": "beec640b build b (#12: a matched echo lacks the approval words)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#12: an echo waits while its key event is matched, then says approved by your tap"
+      },
+      "expect": "does not say approved by your tap"
+    },
+    {
+      "id": "cfmatch-m-weekly-bound",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "named.length < 5 ?",
+      "replace": "named.length < 99 ?",
+      "why": "beec640b build b (#13: the weekly line names every tap)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#13: the weekly counts name at most five taps; the rest are counted together"
+      },
+      "expect": "the weekly counts are not bounded to five named taps"
+    },
+    {
+      "id": "cfmatch-m-epoch-idem",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "c?.epochs.at(-1)?.boundary === boundary ? c :",
+      "replace": "",
+      "why": "beec640b build b (#15: a repeated activation appends a second epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#15 epoch: two runs activating at the same boundary append one epoch"
+      },
+      "expect": "a repeated activation appended a second epoch"
+    },
+    {
+      "id": "cfmatch-m-hc-filter",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "e.action?.description !== \"List Tokens\" ||",
+      "replace": "",
+      "why": "beec640b build b (#15: any read confirms a headcount key)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#15 headcount-read filter: only the key's own List Tokens read counts as in use"
+      },
+      "expect": "a read other than List Tokens confirmed the headcount key"
+    },
+    {
+      "id": "cfmatch-m-reverse-dedupe",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "|| m.rev.includes(g) ||",
+      "replace": "||",
+      "why": "beec640b build b (#15: a reverse miss is raised again)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#15 reverse dedupe: a reverse miss is raised once, never again after its incident leaves the list"
+      },
+      "expect": "a reverse miss was raised again"
+    },
+    {
+      "id": "cfmatch-m-replay-tie",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(t === rp.from && rp.ids.includes(id))",
+      "replace": "false",
+      "why": "beec640b build b (#15: the replay re-reads ids at its instant)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#15 replay tie: ids already read at the replay's instant are skipped, so the position never repeats them"
+      },
+      "expect": "the replay re-read ids at its instant"
+    },
+    {
+      "id": "cfmatch-m-delete-deadline",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "HC_JOB || x.t <= ev.t + HELPER_MS)",
+      "replace": "HC_JOB || true)",
+      "why": "beec640b build b (#15: a late delete counts as in time)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "#15 delete deadline: a helper deleted after 24 h is still an outlived helper"
+      },
+      "expect": "a delete after 24 h counted as in time"
+    },
+    {
+      "id": "cfmatch-m-floor-choice",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "Number.isFinite(ca?.t) ? Math.min(...owed) : last",
+      "replace": "last",
+      "why": "beec640b build b (#15: the rebuild floor is the epoch, not matching's own position)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "12.5: the rebuild starts at the first record at or after the floor, not at record one"
+      },
+      "expect": "records before the floor were rebuilt"
+    },
+    {
+      "id": "cfmatch-m-r2-floor-first",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "?.epochs?.[0]?.boundary : undefined));",
+      "replace": "?.epochs?.at(-1)?.boundary : undefined));",
+      "why": "beec640b build b (r2 #4/#5: records rebuilds from the latest epoch, not the audit replay's)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #4/#5: effects and matching state both lost across two epochs: an honest event between them matches, never 'restarted'"
+      },
+      "expect": "an honest event between the epochs alerted"
+    },
+    {
+      "id": "cfmatch-m-r2-marker",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(await append(copy, BY_RECORD, (c: any) => (wellFormed(c) ? c : { complete_from: from, epoch_boundary: cand, n: {} }))) && ",
+      "replace": "",
+      "why": "beec640b build b (r2 #7: the index is not created complete at activation)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "activation did not create the index complete"
+    },
+    {
+      "id": "cfmatch-m-r2-complete-from",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " || ix.complete_from > epochs[0].boundary",
+      "replace": "",
+      "why": "beec640b build b (r2 #7: a late-started index is taken as complete)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "a late-started index settled"
+    },
+    {
+      "id": "cfmatch-m-r2-missing",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "!isO(ix) || !fin(ix.complete_from) || ix.epoch_boundary !== epochs[0].boundary || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;",
+      "replace": "!isO(ix) || !isO(ix.n)) return { evs: [] };",
+      "why": "beec640b build b (r2 #7: a missing or malformed index is proof of absence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "index settled a revoked number"
+    },
+    {
+      "id": "cfmatch-m-r2-entry",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!isO(p) || !str(p.g) || !strs(p.mo) ||",
+      "replace": "if (!isO(p)) return { evs: [] }; if (",
+      "why": "beec640b build b (r2 #7: a malformed index entry is proof of absence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "a entry index settled"
+    },
+    {
+      "id": "cfmatch-m-r2-recreated",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "complete_from: ok ? c!.complete_from : T,",
+      "replace": "complete_from: ok ? c!.complete_from : epochs[0]?.boundary ?? T,",
+      "why": "beec640b build b (r2 #7: a recreated index claims the first epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #7: an index recreated after a loss is complete only from its recreation"
+      },
+      "expect": "a recreated index claimed completeness"
+    },
+    {
+      "id": "cfmatch-m-r2-hc-any-delete",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(ev.j === HC_JOB || x.t <= ev.t + HELPER_MS)",
+      "replace": "(x.t <= ev.t + HELPER_MS)",
+      "why": "beec640b build b (r2 N1: a late headcount replacement never ends its watch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 N1: a headcount key replaced after 72 h ends its watch: the create is decided, the tap done, no outlived incident"
+      },
+      "expect": "a replaced headcount tap was not acknowledged done"
+    },
+    {
+      "id": "cfmatch-m-r2-retention",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!cursor && T - rp.s > RETAIN_MS)",
+      "replace": "if (!cursor && T - rp.s > Infinity)",
+      "why": "beec640b build b (r2 #10: a replay past retention closes as complete)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #10: a replay range starting past 17 months is kept, red and incomplete, with one retention incident"
+      },
+      "expect": "a replay past the retention bound was closed as complete"
+    },
+    {
+      "id": "cfmatch-m-r2-seen",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "bump(\"master key creates seen\");",
+      "replace": "",
+      "why": "beec640b build b (r2 #1: master creates not counted)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "master creates were not counted"
+    },
+    {
+      "id": "cfmatch-m-r2-readable",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "bump(\"master key creates with readable permission groups\");",
+      "replace": "void 0;",
+      "why": "beec640b build b (r2 #1: readable groups not counted)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "creates with readable groups were not counted"
+    },
+    {
+      "id": "cfmatch-m-r2-shape-raise",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "add(\"shape:create\",",
+      "replace": "((..._: string[]) => {})(\"shape:create\",",
+      "why": "beec640b build b (r2 #1: an unreadable create shape is not raised)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "an unreadable create shape was not raised once"
+    },
+    {
+      "id": "cfmatch-m-r2-shape-once",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(m.sh = true), add(\"shape:create\"",
+      "replace": "add(\"shape:create\"",
+      "why": "beec640b build b (r2 #1: the shape incident is not remembered)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "the shape flag was not kept"
+    },
+    {
+      "id": "cfmatch-m-sec1-reset",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const ok = isO(c) && isO(c.n) && fin(c.complete_from);",
+      "replace": "const ok = isO(c);",
+      "why": "beec640b build b (sec 1: a malformed index keeps its completeness claim)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 1: an index object that exists but is malformed is reset complete only from now"
+      },
+      "expect": "a malformed index kept its old completeness claim"
+    },
+    {
+      "id": "cfmatch-m-sec2-never-ran",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!epochs.length && ix === undefined && !named && (await firstStart())) return",
+      "replace": "if (!epochs.length) return",
+      "why": "beec640b build b (sec 2: a lost activation record reads as never matched)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 2: with the activation record gone after matching ran, a revoked number is unknown, not never matched"
+      },
+      "expect": "a revoked number was settled while the activation record was gone"
+    },
+    {
+      "id": "cfmatch-m-sec3-missing",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "return named ? undefined : { evs: [] };",
+      "replace": "return { evs: [] };",
+      "why": "beec640b build b (sec 3: a named number missing from the index is settled)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 3: a revoked number records names as a tap is unknown when the complete index lacks it or names another tap"
+      },
+      "expect": "a named revoked number was settled"
+    },
+    {
+      "id": "cfmatch-m-sec3-other",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " || (named && p.g !== named)",
+      "replace": "",
+      "why": "beec640b build b (sec 3: a number the index gives to another tap is settled)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 3: a revoked number records names as a tap is unknown when the complete index lacks it or names another tap"
+      },
+      "expect": "a named revoked number was settled"
+    },
+    {
+      "id": "cfmatch-m-sec4-evidence",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const from = (await firstStart()) ? cand : T;",
+      "replace": "const from = cand;",
+      "why": "beec640b build b (sec 4: the index is marked complete without evidence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 4: without evidence of a first activation the index is complete only from now, and that is raised"
+      },
+      "expect": "an index with earlier month files was marked complete"
+    },
+    {
+      "id": "cfmatch-m-sec4-months",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if ((await readJson(copy, `${INDEX_PREFIX}${month(t, i)}.json`)) !== undefined) return false;",
+      "replace": "",
+      "why": "beec640b build b (sec 4: earlier month files are not looked for)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 4: without evidence of a first activation the index is complete only from now, and that is raised"
+      },
+      "expect": "an index with earlier month files was marked complete"
+    },
+    {
+      "id": "cfmatch-m-sec4-prior",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "const prior = epochs.length > 0 || (saved !== undefined && !(validM(saved) && !saved.ep && saved.from === undefined));",
+      "replace": "const prior = epochs.length > 0;",
+      "why": "beec640b build b (sec 4: a corrupt prior matching state counts as a first activation)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "sec 4: without evidence of a first activation the index is complete only from now, and that is raised"
+      },
+      "expect": "a corrupt prior matching state counted as a first activation"
+    },
+    {
+      "id": "cfmatch-m-r3-sr2-first",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "&& !named && (await firstStart())) return",
+      "replace": "&& !named && true) return",
+      "why": "beec640b build b (r3 SR2: the never-matched shortcut skips the first-start evidence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r3 SR2 (a): a surviving month file with matching state, epochs and index lost: a bare revoked number is unknown"
+      },
+      "expect": "a revoked number was settled as never matched despite a surviving month file"
+    },
+    {
+      "id": "cfmatch-m-r3-sr4-epoch",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " || ix.epoch_boundary !== epochs[0].boundary",
+      "replace": "",
+      "why": "beec640b build b (r3 SR4: an index is accepted for an epoch it was not made for)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r3 SR4 (b): an index recreated on day 5, then matching state and epochs lost and re-activated: an absent old record is unknown"
+      },
+      "expect": "a newer epoch made a partial index complete"
+    },
+    {
+      "id": "cfmatch-m-r3-sr4-restamp",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(wellFormed(c) ? c : { complete_from: from, epoch_boundary: cand, n: {} })",
+      "replace": "(wellFormed(c) ? { ...c, epoch_boundary: epochs[0]?.boundary ?? cand } : { complete_from: from, epoch_boundary: cand, n: {} })",
+      "why": "beec640b build b (r3 SR4: activation re-stamps an existing index for the new epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r3 SR4 (b): an index recreated on day 5, then matching state and epochs lost and re-activated: an absent old record is unknown"
+      },
+      "expect": "a newer epoch made a partial index complete"
+    },
+    {
+      "id": "cfmatch-m-r3-stamp",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "epoch_boundary: cand, n: {} })",
+      "replace": "epoch_boundary: undefined, n: {} })",
+      "why": "beec640b build b (r3 SR4: a new index is not bound to its epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "a number the complete index never names was not settled"
     }
   ],
   "retired": []
