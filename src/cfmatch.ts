@@ -16,7 +16,7 @@ export const RESULT_WAIT_MS = 15 * MIN, WARM_MS = GRANT_TTL_MS + H, MAX_PENDING 
 export const HELPER_MS = 24 * H, HC_IDLE_MS = 48 * H, LATE_KEEP_MS = 72 * H, PROBE_MS = 6 * MIN;
 // A replay reads 3 pages (600 events) a run; 24 runs is a day and 14,400 events, about 150 times the busiest real
 // hour (93): a replay still unfinished then is stuck (one instant holding more than a run reads), so the light goes red.
-export const REPLAY_RUNS = 24;
+export const REPLAY_RUNS = 24, RETAIN_MS = 517 * 86_400_000; // 17 months
 export const EPOCHS_KEY = "state/cfepochs.json", INDEX_PREFIX = "state/cfindex/", BY_RECORD = "state/cfindex/by-record.json";
 export const MASTER_GROUP = "master writes, not yet matched";
 const HC_JOB = "cf.token.headcount.setup";
@@ -30,7 +30,7 @@ interface Grant { job: string; req?: Stamp; appr?: Stamp; res?: Stamp; cf?: { ma
 interface Effects { gen: number; since: number; covered_to: number; grants: Record<string, Grant>; retired: Record<string, number>; index: Record<string, string>; revoked: Record<string, string>; replay_from?: number }
 /** One master event: action, key id, time, success, epoch; `s`/`x` name kind and expiry (creates); `g`/`j`/`r` its tap once matched; `o` lifetime decided; `i` in the index; `pg` permission group names (creates). */
 export interface Ev { id: string; a: "create" | "delete"; k: string; t: number; ok: boolean; ep: number; s?: string; x?: number; g?: string; j?: string; r?: number; o?: 1; i?: 1; pg?: string[] }
-export interface M { t: number; ids: string[]; ep: number; from?: number; since?: number; gen?: number; cov: number; pend: Ev[]; expl: Ev[]; late: Ev[]; hc: Record<string, number>; done: string[]; rev: string[]; rj: string[]; ix: string[]; ux?: boolean; rp?: { s: number; from: number; ids: string[]; to: number; runs: number } }
+export interface M { t: number; ids: string[]; ep: number; from?: number; since?: number; gen?: number; cov: number; pend: Ev[]; expl: Ev[]; late: Ev[]; hc: Record<string, number>; done: string[]; rev: string[]; rj: string[]; ix: string[]; ux?: boolean; sh?: boolean; rp?: { s: number; from: number; ids: string[]; to: number; runs: number } }
 
 const isO = (x: unknown): x is Record<string, any> => typeof x === "object" && x !== null && !Array.isArray(x);
 const fin = (x: unknown): x is number => Number.isFinite(x), str = (x: unknown): x is string => typeof x === "string";
@@ -113,18 +113,23 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
   const hold = !fx || fx.replay_from !== undefined;
   if (fx && !hold) (m.since = fx.since), (m.gen = fx.gen), (m.cov = fx.covered_to);
   const cand = m.from ?? (fx ? fx.since + WARM_MS : undefined);
-  if (!m.ep && cand !== undefined && T - SETTLE_MS >= cand && (m.ep = await addEpoch(cand))) (m.from = cand), (on = true);
+  // The index starts complete from the first activation (13.3): created with it, so absence there is proof (Codex r2 #7).
+  const marked = (c: any) => (isO(c) ? c : { complete_from: cand, n: {} });
+  if (!m.ep && cand !== undefined && T - SETTLE_MS >= cand && (await append(copy, BY_RECORD, marked)) && (m.ep = await addEpoch(cand))) (m.from = cand), (on = true);
   const known = (id: string) => [m.pend, m.expl, m.late].some((l) => l.some((x) => x.id === id));
   const counts: Record<string, number> = {};
   const bump = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
 
   /** A master create or delete read from the log: queued for judgment, or counted as before activation (4.5). */
   function take(e: Record<string, any>, id: string, t: number): string | undefined {
+    const rs = e.resource?.response, pg: string[] | undefined = Array.isArray(rs?.policies) ? rs.policies.flatMap((p: any) => (Array.isArray(p?.permission_groups) ? p.permission_groups.map((g: any) => (str(g?.name) ? g.name : "?")) : ["?"])) : undefined;
+    // R after deploy (Codex r2 #1): how many master creates carried readable permission groups. No test claims the live shape.
+    if (e.action.type === "create" && cand !== undefined && !known(id)) { bump("master key creates seen"); if (pg?.length && !pg.includes("?")) bump("master key creates with readable permission groups"); else if (!m.sh) (m.sh = true), add("shape:create", "token-create shape not as expected; honest taps will alert until fixed"); }
     if (m.from === undefined || t < m.from) return cand === undefined ? MASTER_GROUP : `${MASTER_GROUP} (before ${iso(cand)})`;
     if (known(id)) return;
-    const a = e.action.type, k = a === "create" ? e.resource?.response?.id : e.resource?.id, rs = e.resource?.response;
+    const a = e.action.type, k = a === "create" ? e.resource?.response?.id : e.resource?.id;
     const ev: Ev = { id, a, k: str(k) ? k : "", t, ok: e.action.result === "success", ep: epOf(t) };
-    if (a === "create") (ev.s = !str(rs?.name) ? "o" : rs.name.startsWith("front-desk probe ") ? "p" : rs.name.startsWith("front-desk headcount ") ? "h" : "o"), (ev.x = str(rs?.expires_on) ? Date.parse(rs.expires_on) : -1), (ev.pg = Array.isArray(rs?.policies) ? rs.policies.flatMap((p: any) => (Array.isArray(p?.permission_groups) ? p.permission_groups.map((g: any) => (str(g?.name) ? g.name : "?")) : ["?"])) : undefined);
+    if (a === "create") (ev.s = !str(rs?.name) ? "o" : rs.name.startsWith("front-desk probe ") ? "p" : rs.name.startsWith("front-desk headcount ") ? "h" : "o"), (ev.x = str(rs?.expires_on) ? Date.parse(rs.expires_on) : -1), (ev.pg = pg);
     m.pend.push(ev);
   }
   const isMaster = (j: Judged) => j.verdict.v === "counted" && j.verdict.group === MASTER_GROUP;
@@ -163,6 +168,10 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
       }
       if (!(cursor = pg.cursor)) break;
     }
+    // Contract: Cloudflare keeps audit logs 18 months, then deletes them (developers.cloudflare.com/fundamentals/account/
+    // account-security/audit-logs/). Within 17 months a clean final page closes the range; a range starting earlier is
+    // never treated as complete: kept, red, incomplete, one incident.
+    if (!cursor && T - rp.s > RETAIN_MS) { add(`unavailable:retention:${rp.s}`, `matching incomplete: the replay from ${iso(rp.s)} reaches past Cloudflare's 18-month audit log retention; its writes cannot all be judged`); return "replay: past the audit log's retention"; }
     if (cursor) return ++rp.runs >= REPLAY_RUNS ? `the replay of what build a judged alone is unfinished after ${rp.runs} runs, at ${iso(rp.from)}` : undefined; // more next hour; incomplete meanwhile
     add(`gap:${rp.s}`, `master writes from ${iso(rp.s)} to ${iso(rp.to)} were not judged when they happened (build b was off): ${word(countIn(rp.s, rp.to), "master write")} in that range, judged now`);
     delete m.rp;
@@ -183,9 +192,9 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
       const gone = [...out].filter((g) => m.expl.some((x) => x.g === g && !x.i));
       if (!gone.length || (await index(gone))) m.expl = m.expl.filter((x) => !out.has(x.g!));
       m.ux = false;
-      for (const [n, named] of Object.entries(fx.revoked)) if (!m.rj.includes(n)) {
-        const hit = await lookup(n); // a read failure: unresolved, matching incomplete, tried again next run
-        if (hit === undefined || (!hit.g && named)) { m.ux = true; if (hit) add(`unavailable:record:${n}`, `matching incomplete: record ${n} was found bad after its tap retired, and the index does not name its tap`); continue; }
+      for (const n of Object.keys(fx.revoked)) if (!m.rj.includes(n)) {
+        const hit = await lookup(n); // unknown: unresolved, matching incomplete, tried again next run
+        if (hit === undefined) { m.ux = true; add("unavailable:index", "matching incomplete: the index of matched taps is missing, unreadable or not complete, so records found bad cannot be settled"); continue; }
         for (const ev of hit.evs) unexplain(ev); // a number the complete index never names was never a matched tap's: nothing to re-judge
         m.rj.push(n);
       }
@@ -211,7 +220,7 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
       m.ix = m.ix.filter((g) => Object.hasOwn(fx!.grants, g));
     }
     for (const [k, n] of Object.entries(counts)) week[k] = (week[k] ?? 0) + n;
-    if (on) add(`on:${m.ep}`, `Cloudflare matching on: master writes judged from ${iso(m.from!)}: ${Object.entries(counts).filter(([k]) => k.startsWith("master writes matched")).reduce((a, [, n]) => a + n, 0)} matched, ${counts["master writes unmatched"] ?? 0} unmatched, ${m.pend.length} pending`);
+    if (on) add(`on:${m.ep}`, `Cloudflare matching on: master writes judged from ${iso(m.from!)}: ${Object.entries(counts).filter(([k]) => k.startsWith("master writes matched")).reduce((a, [, n]) => a + n, 0)} matched, ${counts["master writes unmatched"] ?? 0} unmatched, ${m.pend.length} pending; creates seen ${counts["master key creates seen"] ?? 0}, groups readable ${counts["master key creates with readable permission groups"] ?? 0}`);
   }
   /** Reverse check and outlived helpers; returns the taps whose matching is complete (4.7, 12.2, 12.3). */
   function checks(through: number): string[] {
@@ -229,7 +238,8 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
     const newest = m.expl.filter((x) => x.a === "create" && x.j === HC_JOB && read(x)).sort((a, b) => m.hc[b.k] - m.hc[a.k])[0]?.k;
     for (const ev of m.expl) {
       if (ev.a !== "create" || ev.o) continue;
-      if (m.expl.some((x) => x.a === "delete" && x.k === ev.k && x.t <= ev.t + HELPER_MS)) { ev.o = 1; continue; }
+      // Any matched delete ends a headcount key's watch; an ordinary helper must go within 24 h (Codex r2 N1).
+      if (m.expl.some((x) => x.a === "delete" && x.k === ev.k && (ev.j === HC_JOB || x.t <= ev.t + HELPER_MS))) { ev.o = 1; continue; }
       if (through <= ev.t + HELPER_MS) continue;
       const hc = ev.j === HC_JOB;
       if (hc && read(ev) && ev.k === newest && through - m.hc[ev.k] < HC_IDLE_MS) continue;
@@ -252,19 +262,24 @@ export async function matcher(copy: Copy, who: Who, s: { bm: { t: number; ids: s
       const next = { ...c };
       for (const ev of evs) if (!(next[ev.g!] ?? []).some((x) => x.id === ev.id)) next[ev.g!] = [...(next[ev.g!] ?? []), { ...ev, i: 1 }];
       return next;
-    })) && (await append<Record<string, { g: string; mo: string[] }>>(copy, BY_RECORD, (c) => {
-      const next = { ...c };
-      for (const n of ns) { const g = fx!.index[n], had = next[n]?.mo ?? []; next[n] = { g, mo: had.includes(mo) ? had : [...had, mo] }; }
+    })) && (await append<{ complete_from: number; n: Record<string, { g: string; mo: string[] }> }>(copy, BY_RECORD, (c) => {
+      const next = { complete_from: c?.complete_from ?? T, n: { ...c?.n } }; // recreated after a loss: complete only from now
+      for (const n of ns) { const g = fx!.index[n], had = next.n[n]?.mo ?? []; next.n[n] = { g, mo: had.includes(mo) ? had : [...had, mo] }; }
       return next;
     }));
     if (ok) for (const ev of evs) ev.i = 1;
     return Boolean(ok);
   }
-  /** The tap a record number belongs to and its matched events, at any age; undefined when the index could not be read. */
+  /** The tap a record number belongs to and its matched events, at any age. No tap only when nothing was ever matched, or the
+   * index exists, is well-formed and is complete from the first epoch; anything else is unknown (undefined). */
   async function lookup(n: string): Promise<{ g?: string; evs: Ev[] } | undefined> {
     try {
-      const p = (await readJson(copy, BY_RECORD))?.[n];
-      if (!isO(p) || !str(p.g) || !strs(p.mo)) return { evs: [] };
+      if (!epochs.length) return { evs: [] };
+      const ix = await readJson(copy, BY_RECORD);
+      if (!isO(ix) || !fin(ix.complete_from) || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;
+      const p = ix.n[n];
+      if (p === undefined) return { evs: [] };
+      if (!isO(p) || !str(p.g) || !strs(p.mo)) return undefined;
       const evs: Ev[] = [];
       for (const mo of p.mo) { const f = await readJson(copy, `${INDEX_PREFIX}${mo}.json`); if (!isO(f)) return undefined; evs.push(...(Array.isArray(f[p.g]) ? f[p.g] : [])); }
       return { g: p.g, evs };

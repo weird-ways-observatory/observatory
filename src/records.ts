@@ -328,9 +328,9 @@ export async function runRecords(env: RecordsEnv, fetchFn: (req: Request) => Pro
   try {
     // 12.5: effects lost after records were read (a revert's save dropped them), or older than cfaudit last saw: a
     // recovery, never a fresh start. The chains still needed are rebuilt by the replay below, from the first record at
-    // or after the floor: matching's checkpoint or oldest waiting event (else the last epoch) less a grant's life.
+    // or after the floor: matching's checkpoint or oldest waiting event (else the first epoch) less a grant's life.
     if (env.RECORDS && ((seq > 0 && !(pe.grants && typeof pe.grants === "object")) || (Number.isInteger(ca?.gen) && fx.gen < ca.gen))) {
-      const last = await env.COPY.get(EPOCHS_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.epochs?.at(-1)?.boundary : undefined));
+      const last = await env.COPY.get(EPOCHS_KEY).then(async (o) => (o ? JSON.parse(await o.text())?.epochs?.[0]?.boundary : undefined)); // the first epoch: the same floor as the audit replay (Codex r2 #4/#5)
       // Every outstanding obligation: the checkpoint, an unfinished replay, waiting, late and not-yet-indexed matched events.
       const owed = [ca?.t, ca?.rp?.s, ...[ca?.pend, ca?.late, ca?.expl?.filter((x: { i?: 1 }) => !x.i)].flatMap((l) => (Array.isArray(l) ? l.map((x: { t: number }) => x.t) : []))].filter(Number.isFinite);
       const at = Number.isFinite(ca?.t) ? Math.min(...owed) : last;

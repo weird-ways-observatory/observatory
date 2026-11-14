@@ -589,7 +589,7 @@ test("row 22: a tap is acknowledged done only once its index entry landed", asyn
   await w.tap(g, "cf.dns.list", t, { made: [id(1)], deleted: [id(1)] });
   w.log.push(mc("jj1", t + MIN + 1000, id(1)), md("jj2", t + MIN + 2000, id(1)));
   const put = w.b.put.bind(w.b);
-  (w.b as any).put = async (k: string, ...a: any[]) => (k.startsWith("state/cfindex/") ? null : put(k, ...(a as [any, any])));
+  (w.b as any).put = async (k: string, ...a: any[]) => (k.startsWith("state/cfindex/") && k !== "state/cfindex/by-record.json" ? null : put(k, ...(a as [any, any])));
   await w.crons(t0 + H, t + 4 * H);
   assert.ok(!state(w.b).m.done.includes(g), "a tap was acknowledged done while its index entry could not be saved");
 });
@@ -752,7 +752,7 @@ test("#6: an unfinished replay never judges absence or acknowledges a tap it has
 test("#7: a lookup of a revoked record has no age cap, and an unreadable index keeps matching incomplete", async () => {
   const w = world();
   await w.run(T, 0);
-  w.b.store.set("state/cfindex/by-record.json", { body: JSON.stringify({ "41": { g: "old-tap-1", mo: ["2023-01"] }, "42": { g: "old-tap-2", mo: ["2023-02"] } }), etag: "br" });
+  w.b.store.set("state/cfindex/by-record.json", { body: JSON.stringify({ complete_from: ON, n: { "41": { g: "old-tap-1", mo: ["2023-01"] }, "42": { g: "old-tap-2", mo: ["2023-02"] } } }), etag: "br" });
   w.b.store.set("state/cfindex/2023-01.json", { body: JSON.stringify({ "old-tap-1": [{ id: "anc1", a: "create", k: id(1), t: T - 1000 * 86_400_000, ok: true, ep: 1, g: "old-tap-1", i: 1 }] }), etag: "m1" });
   w.fx.revoked["41"] = "";
   w.fx.revoked["42"] = ""; // its month file is gone: unreadable
@@ -771,19 +771,28 @@ test("#7/S1: acknowledging a tap writes every record number of its chain, verdic
   const u = await w.tap("5ca1ab1e-0000-4000-8000-0000000007a2", "cf.zone.read", t + 10 * MIN, "unknown");
   w.log.push(mc("v71", t + MIN + 1000, id(1)), md("v72", t + MIN + 2000, id(1)));
   await w.crons(t0 + H, t + 4 * H);
-  const br = JSON.parse(w.b.store.get("state/cfindex/by-record.json")?.body ?? "{}");
+  const br = JSON.parse(w.b.store.get("state/cfindex/by-record.json")?.body ?? "{}").n ?? {};
   for (const n of [a.req, a.appr, a.vd!, a.res, u.req, u.appr, u.res]) assert.ok(br[String(n)], `record ${n} of an acknowledged tap is not in the index`);
 });
 
-test("S1/S2: a revoked number the complete index never names re-judges nothing quietly; a named one not in the index is raised", async () => {
+test("S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown", async () => {
   const w = world();
   await w.run(T, 0);
+  assert.equal(JSON.parse(w.b.store.get("state/cfindex/by-record.json")?.body ?? "{}").complete_from, ON, "activation did not create the index complete from the first epoch");
   w.fx.revoked["77"] = "";
-  w.fx.revoked["78"] = "some-tap";
-  const r = await w.run(T + H);
-  assert.ok(w.m().rj.includes("77"), "a number proven never matched was not settled");
-  assert.equal(w.has("unavailable:record:78").length, 1, "a number records named as a tap's but missing from the index was not raised");
-  assert.equal(r.matching, "incomplete", "a missing index entry for a named record left matching complete");
+  let r = await w.run(T + H);
+  assert.ok(w.m().rj.includes("77"), "a number the complete index never names was not settled");
+  assert.equal(r.matching, "active");
+  for (const [name, body] of [["missing", undefined], ["malformed", "{\"n\": 5}"], ["late-started", JSON.stringify({ complete_from: T + H, n: {} })], ["entry", JSON.stringify({ complete_from: ON, n: { "85": 5 } })]] as const) {
+    const n = `8${name.length}`;
+    if (body === undefined) w.b.store.delete("state/cfindex/by-record.json"); else w.b.store.set("state/cfindex/by-record.json", { body, etag: name });
+    w.fx.revoked[n] = "";
+    r = await w.run(T + 2 * H);
+    assert.ok(!w.m().rj.includes(n), `a ${name} index settled a revoked number as never matched`);
+    assert.equal(r.matching, "incomplete", `a ${name} index left matching reported complete`);
+    assert.equal(w.has("unavailable:index").length, 1, `a ${name} index did not raise one incident`);
+    delete w.fx.revoked[n];
+  }
 });
 
 test("#8: the headcount key is re-checked every run: 48 h without a read raises it", async () => {
@@ -967,4 +976,76 @@ test("#15 dedupe: an event read by both the replay and the main read is judged o
   await w.run(T + 3 * H, 0);
   const ids = [...w.m().pend, ...w.m().late, ...w.m().expl].map((e: any) => e.id);
   assert.equal(new Set(ids).size, ids.length, "an event read twice was queued twice");
+});
+
+test("r2 #4/#5: effects and matching state both lost across two epochs: an honest event between them matches, never 'restarted'", async () => {
+  const w = await signedWorld();
+  const t0 = Math.floor(CF_FROM / H) * H + H;
+  await w.crons(t0, t0 + H);
+  const on = since(w) + WARM_MS;
+  await w.crons(t0 + H, on + 2 * H);
+  const t = on + 3 * H, g = "5ca1ab1e-0000-4000-8000-0000000002e2";
+  await w.tap(g, "cf.dns.list", t, { made: [id(1)], deleted: [id(1)] });
+  w.log.push(mc("ce1", t + MIN + 1000, id(1)), md("ce2", t + MIN + 2000, id(1)));
+  const ep = JSON.parse(w.b.store.get(EPOCHS_KEY)!.body);
+  ep.epochs.push({ n: 2, boundary: on + 5 * H }); // a later re-enable
+  w.b.store.set(EPOCHS_KEY, { body: JSON.stringify(ep), etag: "ep2" });
+  const rs = JSON.parse(w.b.store.get(RECORDS_KEY)!.body), cs = state(w.b);
+  rs.seq = w.seq(); if (rs.sealed) rs.sealed.to = w.seq(); delete rs.effects; delete rs.open?.[g];
+  delete cs.m; cs.bm = { t: on + 7 * H, ids: [] };
+  w.b.store.set(RECORDS_KEY, { body: JSON.stringify(rs), etag: "lost-r" });
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(cs), etag: "lost-c" });
+  await w.crons(on + 7 * H, on + 11 * H);
+  assert.deepEqual(w.inc().filter((i) => i.id.startsWith("change:ce")), [], "an honest event between the epochs alerted after both states were lost");
+  assert.ok(state(w.b).m.expl.some((e: any) => e.id === "ce1"), "the honest event was not matched");
+});
+
+test("r2 N1: a headcount key replaced after 72 h ends its watch: the create is decided, the tap done, no outlived incident", async () => {
+  const k1 = id(31), k2 = id(32);
+  const w = world({ "aaaaaaaa-h1": grant("cf.token.headcount.setup", T, { made: [k1], deleted: [] }), "bbbbbbbb-h2": grant("cf.token.headcount.setup", T + 72 * H, { made: [k2], deleted: [k1] }) });
+  add(w, mc("n1c", T + 10_000, k1, { name: "front-desk headcount a", exp: null }), hcRead("n1r", T + 25 * H, k1), hcRead("n1r2", T + 49 * H, k1), hcRead("n1r3", T + 71 * H, k1));
+  add(w, mc("n2c", T + 72 * H + 10_000, k2, { name: "front-desk headcount b", exp: null }), md("n2d", T + 72 * H + 20_000, k1));
+  await w.run(T + 74 * H);
+  assert.ok(w.m().done.includes("aaaaaaaa-h1"), "a replaced headcount tap was not acknowledged done");
+  assert.ok(w.m().expl.find((e: any) => e.id === "n1c")?.o, "a replaced headcount key's create stayed undecided");
+  assert.equal(w.has("outlived:n1c").length, 0, "a headcount key deleted after 72 h was raised as outlived");
+});
+
+test("r2 #10: a replay range starting past 17 months is kept, red and incomplete, with one retention incident", async () => {
+  const w = world();
+  await w.run(T, 0);
+  const s = state(w.b);
+  s.m.t = T - 600 * 86_400_000; s.m.ids = [];
+  w.b.store.set(STATE_KEY, { body: JSON.stringify(s), etag: "old" });
+  const r = await w.run(T + H);
+  await w.run(T + 2 * H);
+  assert.ok(w.m().rp, "a replay past the retention bound was closed as complete");
+  assert.equal(r.cfaudit, "did not finish", "a replay past the retention bound left the light green");
+  assert.equal(r.matching, "incomplete");
+  assert.equal(w.has("unavailable:retention:").length, 1, "the retention limit was not raised once");
+  assert.equal(w.has("gap:").length, 0, "a gap was closed over a range past retention");
+});
+
+test("r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once", async () => {
+  const w = world({ "aaaaaaaa-sh": grant("cf.dns.list", T, { made: [id(1), id(2)], deleted: [] }) });
+  const bare = mc("sh2", T + 11_000, id(2)); delete bare.resource.response.policies;
+  add(w, mc("sh1", T + 10_000, id(1)), bare);
+  await w.run(T + H);
+  const c = state(w.b).week.counts;
+  assert.equal(c["master key creates seen"], 2, "master creates were not counted");
+  assert.equal(c["master key creates with readable permission groups"], 1, "creates with readable groups were not counted");
+  add(w, (() => { const e = mc("sh3", T + 2 * H, id(3)); delete e.resource.response.policies; return e; })());
+  await w.run(T + 3 * H);
+  assert.equal(w.has("shape:create").length, 1, "an unreadable create shape was not raised once");
+  assert.equal(w.m().sh, true, "the shape flag was not kept");
+});
+
+test("r2 #7: an index recreated after a loss is complete only from its recreation", async () => {
+  const w = world({ "aaaaaaaa-rc": grant("cf.dns.list", T, { made: [id(1)], deleted: [id(1)] }) });
+  await w.run(T, 0);
+  w.b.store.delete("state/cfindex/by-record.json");
+  add(w, mc("rc1", T + 10_000, id(1)), md("rc2", T + 11_000, id(1)));
+  await w.run(T + 2 * H);
+  assert.ok(w.m().done.includes("aaaaaaaa-rc"), "test setup: the tap was not acknowledged");
+  assert.ok(JSON.parse(w.b.store.get("state/cfindex/by-record.json")!.body).complete_from > ON, "a recreated index claimed completeness from the first epoch");
 });
