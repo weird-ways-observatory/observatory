@@ -3813,8 +3813,8 @@
       "id": "cfmatch-m-delete-deadline",
       "row": "beec640b-b",
       "file": "src/cfmatch.ts",
-      "find": " && x.t <= ev.t + HELPER_MS)) { ev.o = 1; continue; }",
-      "replace": ")) { ev.o = 1; continue; }",
+      "find": "HC_JOB || x.t <= ev.t + HELPER_MS)",
+      "replace": "HC_JOB || true)",
       "why": "beec640b build b (#15: a late delete counts as in time)",
       "test": {
         "file": "test/cfmatch.test.ts",
@@ -3834,6 +3834,162 @@
         "name": "12.5: the rebuild starts at the first record at or after the floor, not at record one"
       },
       "expect": "records before the floor were rebuilt"
+    },
+    {
+      "id": "cfmatch-m-r2-floor-first",
+      "row": "beec640b-b",
+      "file": "src/records.ts",
+      "find": "?.epochs?.[0]?.boundary : undefined));",
+      "replace": "?.epochs?.at(-1)?.boundary : undefined));",
+      "why": "beec640b build b (r2 #4/#5: records rebuilds from the latest epoch, not the audit replay's)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #4/#5: effects and matching state both lost across two epochs: an honest event between them matches, never 'restarted'"
+      },
+      "expect": "an honest event between the epochs alerted"
+    },
+    {
+      "id": "cfmatch-m-r2-marker",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(await append(copy, BY_RECORD, marked)) && ",
+      "replace": "",
+      "why": "beec640b build b (r2 #7: the index is not created complete at activation)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "activation did not create the index complete"
+    },
+    {
+      "id": "cfmatch-m-r2-complete-from",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": " || ix.complete_from > epochs[0].boundary",
+      "replace": "",
+      "why": "beec640b build b (r2 #7: a late-started index is taken as complete)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "a late-started index settled"
+    },
+    {
+      "id": "cfmatch-m-r2-missing",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!isO(ix) || !fin(ix.complete_from) || ix.complete_from > epochs[0].boundary || !isO(ix.n)) return undefined;",
+      "replace": "if (!isO(ix) || !isO(ix.n)) return { evs: [] };",
+      "why": "beec640b build b (r2 #7: a missing or malformed index is proof of absence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "index settled a revoked number"
+    },
+    {
+      "id": "cfmatch-m-r2-entry",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!isO(p) || !str(p.g) || !strs(p.mo)) return undefined;",
+      "replace": "if (!isO(p) || !str(p.g) || !strs(p.mo)) return { evs: [] };",
+      "why": "beec640b build b (r2 #7: a malformed index entry is proof of absence)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "S1/S2: a revoked number is settled as never matched only by a complete index; missing, malformed or late-started is unknown"
+      },
+      "expect": "a entry index settled"
+    },
+    {
+      "id": "cfmatch-m-r2-recreated",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "complete_from: c?.complete_from ?? T,",
+      "replace": "complete_from: c?.complete_from ?? epochs[0]?.boundary ?? T,",
+      "why": "beec640b build b (r2 #7: a recreated index claims the first epoch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #7: an index recreated after a loss is complete only from its recreation"
+      },
+      "expect": "a recreated index claimed completeness"
+    },
+    {
+      "id": "cfmatch-m-r2-hc-any-delete",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(ev.j === HC_JOB || x.t <= ev.t + HELPER_MS)",
+      "replace": "(x.t <= ev.t + HELPER_MS)",
+      "why": "beec640b build b (r2 N1: a late headcount replacement never ends its watch)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 N1: a headcount key replaced after 72 h ends its watch: the create is decided, the tap done, no outlived incident"
+      },
+      "expect": "a replaced headcount tap was not acknowledged done"
+    },
+    {
+      "id": "cfmatch-m-r2-retention",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "if (!cursor && T - rp.s > RETAIN_MS)",
+      "replace": "if (!cursor && T - rp.s > Infinity)",
+      "why": "beec640b build b (r2 #10: a replay past retention closes as complete)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #10: a replay range starting past 17 months is kept, red and incomplete, with one retention incident"
+      },
+      "expect": "a replay past the retention bound was closed as complete"
+    },
+    {
+      "id": "cfmatch-m-r2-seen",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "bump(\"master key creates seen\");",
+      "replace": "",
+      "why": "beec640b build b (r2 #1: master creates not counted)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "master creates were not counted"
+    },
+    {
+      "id": "cfmatch-m-r2-readable",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "bump(\"master key creates with readable permission groups\");",
+      "replace": "void 0;",
+      "why": "beec640b build b (r2 #1: readable groups not counted)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "creates with readable groups were not counted"
+    },
+    {
+      "id": "cfmatch-m-r2-shape-raise",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "add(\"shape:create\",",
+      "replace": "((..._: string[]) => {})(\"shape:create\",",
+      "why": "beec640b build b (r2 #1: an unreadable create shape is not raised)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "an unreadable create shape was not raised once"
+    },
+    {
+      "id": "cfmatch-m-r2-shape-once",
+      "row": "beec640b-b",
+      "file": "src/cfmatch.ts",
+      "find": "(m.sh = true), add(\"shape:create\"",
+      "replace": "add(\"shape:create\"",
+      "why": "beec640b build b (r2 #1: the shape incident is not remembered)",
+      "test": {
+        "file": "test/cfmatch.test.ts",
+        "name": "r2 #1: each run counts master creates and how many had readable permission groups, and raises the shape once"
+      },
+      "expect": "the shape flag was not kept"
     }
   ],
   "retired": []
